@@ -79,8 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var controllerMode = false
     private var cursorHiddenByUs = false
-    private var lastControllerInput = Date.distantPast
-    private var stickHeld = false
+    private var lastControllerActivity = Date.distantPast
     private var pidIsControllerKeys: [pid_t: Bool] = [:]
     private var requestedPermission = false
     private var needsPermission = false
@@ -167,10 +166,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             followCursor()
             panel.orderFrontRegardless()
             if hideArrow { hideSystemArrow() }
-            followTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
+            // Always attach to the main run loop, whichever thread asked
+            let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
                 self?.followCursor()
             }
-            RunLoop.main.add(followTimer!, forMode: .common)
+            RunLoop.main.add(timer, forMode: .common)
+            followTimer = timer
         } else {
             followTimer?.invalidate()
             followTimer = nil
@@ -204,9 +205,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return result
     }
 
-    private var controllerRecentlyActive: Bool {
-        let age = Date().timeIntervalSince(lastControllerInput)
-        return (stickHeld && age < 2.0) || age < 0.3
+    /// Live check: is either stick pushed past its deadzone right now? (ignores small drift)
+    private var sticksDeflected: Bool {
+        GCController.controllers().contains { c in
+            guard let p = c.extendedGamepad else { return false }
+            return hypot(p.leftThumbstick.xAxis.value, p.leftThumbstick.yAxis.value) > 0.25
+                || hypot(p.rightThumbstick.xAxis.value, p.rightThumbstick.yAxis.value) > 0.25
+        }
+    }
+
+    /// True while the controller is what's driving the pointer
+    private var controllerDriving: Bool {
+        sticksDeflected || Date().timeIntervalSince(lastControllerActivity) < 0.35
     }
 
     func handle(type: CGEventType, event: CGEvent) {
@@ -216,17 +226,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let pid = pid_t(event.getIntegerValueField(.eventSourceUnixProcessID))
-        let synthetic = pid != 0 && pid != getpid()
-        let fromController: Bool
-        if synthetic {
-            // Mouse utilities (Logi Options+, Mac Mouse Fix…) re-post real mouse moves, so these count as mouse
-            fromController = isControllerKeys(pid) || controllerRecentlyActive
-        } else {
-            // Hardware event, unless the controller is mid-use and macOS didn't tag the source
-            fromController = controllerRecentlyActive
-        }
+        let fromControllerKeys = pid != 0 && pid != getpid() && isControllerKeys(pid)
 
-        setControllerMode(fromController)
+        // Any pointer event the controller isn't currently producing came from a real mouse/trackpad
+        setControllerMode(fromControllerKeys || controllerDriving)
 
         if controllerMode {
             switch type {
@@ -234,8 +237,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .leftMouseUp, .rightMouseUp: ringView.pressed = false
             default: break
             }
-            let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
-            followCursor(to: NSPoint(x: event.location.x, y: primaryMaxY - event.location.y))
         }
     }
 
@@ -279,23 +280,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                queue: .main) { [weak self] note in
             if let c = note.object as? GCController { self?.watch(c) }
         }
-        NotificationCenter.default.addObserver(forName: .GCControllerDidDisconnect, object: nil,
-                                               queue: .main) { [weak self] _ in self?.stickHeld = false }
         GCController.controllers().forEach { watch($0) }
     }
 
     private func watch(_ controller: GCController) {
-        controller.physicalInputProfile.valueDidChangeHandler = { [weak self, weak controller] _, _ in
-            guard let self, let controller else { return }
-            self.lastControllerInput = Date()
-            if let pad = controller.extendedGamepad {
-                let l = hypot(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value)
-                let r = hypot(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value)
-                self.stickHeld = l > 0.25 || r > 0.25
+        controller.handlerQueue = .main
+        controller.physicalInputProfile.valueDidChangeHandler = { [weak self, weak controller] _, element in
+            // GameController can call this off the main thread; all UI work must happen on main
+            DispatchQueue.main.async {
+                guard let self, let controller else { return }
+                self.controllerElementChanged(element, on: controller)
             }
-            // Pressing any button also switches to the circle, like waking a console
-            self.setControllerMode(true)
         }
+    }
+
+    /// Only deliberate input counts: a button press, a stick pushed past its deadzone,
+    /// or a finger on the touchpad. Sensor noise and drift are ignored.
+    private func controllerElementChanged(_ element: GCControllerElement, on controller: GCController) {
+        var deliberate = false
+        if let button = element as? GCControllerButtonInput {
+            deliberate = button.isPressed
+        } else if let pad = element as? GCControllerDirectionPad {
+            if let ds = controller.extendedGamepad as? GCDualSenseGamepad,
+               pad === ds.touchpadPrimary || pad === ds.touchpadSecondary {
+                deliberate = true
+            } else {
+                deliberate = hypot(pad.xAxis.value, pad.yAxis.value) > 0.25
+            }
+        } else if let axis = element as? GCControllerAxisInput {
+            deliberate = abs(axis.value) > 0.25
+        }
+        guard deliberate else { return }
+        lastControllerActivity = Date()
+        setControllerMode(true)
     }
 
     // MARK: Menu bar
