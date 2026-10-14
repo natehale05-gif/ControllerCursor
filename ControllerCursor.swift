@@ -128,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
-        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.cursorWindow)))
+        panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         ringView = RingView(frame: NSRect(x: 0, y: 0, width: size, height: size))
         ringView.diameter = ringSize
@@ -143,8 +143,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         followCursor()
     }
 
-    private func followCursor() {
-        let p = NSEvent.mouseLocation
+    /// Live pointer position straight from the window server, in AppKit (bottom-left) coordinates.
+    /// NSEvent.mouseLocation can go stale when another app (ControllerKeys) moves the pointer.
+    private func currentCursorPoint() -> NSPoint {
+        guard let loc = CGEvent(source: nil)?.location,
+              let primary = NSScreen.screens.first else { return NSEvent.mouseLocation }
+        return NSPoint(x: loc.x, y: primary.frame.maxY - loc.y)
+    }
+
+    private func followCursor(to point: NSPoint? = nil) {
+        let p = point ?? currentCursorPoint()
         let s = panel.frame.size
         panel.setFrameOrigin(NSPoint(x: p.x - s.width / 2, y: p.y - s.height / 2))
     }
@@ -226,7 +234,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .leftMouseUp, .rightMouseUp: ringView.pressed = false
             default: break
             }
-            followCursor()
+            let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
+            followCursor(to: NSPoint(x: event.location.x, y: primaryMaxY - event.location.y))
         }
     }
 
