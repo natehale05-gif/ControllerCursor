@@ -228,8 +228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pid = pid_t(event.getIntegerValueField(.eventSourceUnixProcessID))
         let fromControllerKeys = pid != 0 && pid != getpid() && isControllerKeys(pid)
 
-        // Any pointer event the controller isn't currently producing came from a real mouse/trackpad
-        setControllerMode(fromControllerKeys || controllerDriving)
+        // ControllerKeys only counts if the controller was really used in the last second;
+        // anything else the controller isn't producing came from a real mouse/trackpad.
+        let recentlyUsed = Date().timeIntervalSince(lastControllerActivity) < 1.0
+        setControllerMode(controllerDriving || (fromControllerKeys && recentlyUsed))
 
         if controllerMode {
             switch type {
