@@ -18,6 +18,16 @@ private func allowBackgroundCursorHiding() {
     _ = unsafeBitCast(b, to: SetPropFn.self)(conn, conn, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
 }
 
+/// Same check ControllerKeys uses to see whether the system arrow is currently visible.
+private let cursorIsVisibleFn: (@convention(c) () -> Int32)? = {
+    for name in ["CGCursorIsVisible", "SLCursorIsVisible"] {
+        if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), name) {
+            return unsafeBitCast(sym, to: (@convention(c) () -> Int32).self)
+        }
+    }
+    return nil
+}()
+
 // MARK: - Ring drawing
 
 final class RingView: NSView {
@@ -82,6 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastControllerActivity = Date.distantPast
     private var lastPointerPoint = NSPoint.zero
     private var pointerStillSince = Date()
+    private var hideCount = 0
+    private var lastRehide = Date.distantPast
     private var pidIsControllerKeys: [pid_t: Bool] = [:]
     private var requestedPermission = false
     private var needsPermission = false
@@ -172,9 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if hideArrow { hideSystemArrow() }
             // Always attach to the main run loop, whichever thread asked
             pointerStillSince = Date()
+            lastPointerPoint = currentCursorPoint()
             let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
-                self?.followCursor()
-                self?.checkForFrozenPointer()
+                self?.tick()
             }
             RunLoop.main.add(timer, forMode: .common)
             followTimer = timer
@@ -189,9 +201,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// If ControllerKeys froze the pointer because the arrow is hidden (its "Relative Mouse
     /// Aiming: Auto" game mode), bring the arrow back and explain the setting once.
-    private func checkForFrozenPointer() {
+    private func tick() {
+        guard controllerMode else { return }
         let p = currentCursorPoint()
-        if p != lastPointerPoint { lastPointerPoint = p; pointerStillSince = Date(); return }
+        let moved = p != lastPointerPoint
+        lastPointerPoint = p
+
+        if moved {
+            pointerStillSince = Date()
+            // The pointer moved but the controller has been idle: a mouse or trackpad moved it.
+            if !sticksDeflected && Date().timeIntervalSince(lastControllerActivity) > 0.35 {
+                setControllerMode(false)
+                return
+            }
+        }
+        followCursor(to: p)
+
+        // Apps and websites re-show the arrow when they switch to a hand or text cursor.
+        if cursorHiddenByUs, hideArrow, cursorIsVisibleFn?() != 0,
+           Date().timeIntervalSince(lastRehide) > 0.1 {
+            CGDisplayHideCursor(CGMainDisplayID())
+            hideCount += 1
+            lastRehide = Date()
+        }
+
+        if !moved { checkForFrozenPointer() }
+    }
+
+    private func checkForFrozenPointer() {
         guard cursorHiddenByUs, sticksDeflected,
               Date().timeIntervalSince(pointerStillSince) > 0.4 else { return }
         hideArrow = false
@@ -211,12 +248,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func hideSystemArrow() {
         guard !cursorHiddenByUs else { return }
         CGDisplayHideCursor(CGMainDisplayID())
+        hideCount = 1
         cursorHiddenByUs = true
     }
 
     private func restoreArrow() {
         guard cursorHiddenByUs else { return }
-        CGDisplayShowCursor(CGMainDisplayID())
+        for _ in 0..<max(hideCount, 1) { CGDisplayShowCursor(CGMainDisplayID()) }
+        hideCount = 0
         cursorHiddenByUs = false
     }
 
