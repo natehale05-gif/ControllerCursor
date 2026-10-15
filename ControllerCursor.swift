@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controllerMode = false
     private var cursorHiddenByUs = false
     private var lastControllerActivity = Date.distantPast
+    private var lastPointerPoint = NSPoint.zero
+    private var pointerStillSince = Date()
     private var pidIsControllerKeys: [pid_t: Bool] = [:]
     private var requestedPermission = false
     private var needsPermission = false
@@ -169,8 +171,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.orderFrontRegardless()
             if hideArrow { hideSystemArrow() }
             // Always attach to the main run loop, whichever thread asked
+            pointerStillSince = Date()
             let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
                 self?.followCursor()
+                self?.checkForFrozenPointer()
             }
             RunLoop.main.add(timer, forMode: .common)
             followTimer = timer
@@ -181,6 +185,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.orderOut(nil)
             restoreArrow()
         }
+    }
+
+    /// If ControllerKeys froze the pointer because the arrow is hidden (its "Relative Mouse
+    /// Aiming: Auto" game mode), bring the arrow back and explain the setting once.
+    private func checkForFrozenPointer() {
+        let p = currentCursorPoint()
+        if p != lastPointerPoint { lastPointerPoint = p; pointerStillSince = Date(); return }
+        guard cursorHiddenByUs, sticksDeflected,
+              Date().timeIntervalSince(pointerStillSince) > 0.4 else { return }
+        hideArrow = false
+        restoreArrow()
+        rebuildMenu()
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "ControllerKeys froze the pointer"
+        alert.informativeText = """
+        ControllerKeys thinks a game locked the mouse because the arrow was hidden, so the arrow is back on.
+
+        To use the circle without the arrow: open ControllerKeys, select your Console Mode profile, go to Settings → FPS / Pointer-Lock Games, and set Relative Mouse Aiming to Off. Then turn Hide Arrow back on from the 🎮 menu.
+        """
+        alert.runModal()
     }
 
     private func hideSystemArrow() {
