@@ -83,9 +83,6 @@ enum CircleCursor {
         "com.apple.coregraphics.IBeam", "com.apple.coregraphics.IBeamXOR",
         "com.apple.coregraphics.Alias", "com.apple.coregraphics.Copy", "com.apple.coregraphics.Move",
     ]
-    private static let skippedNumbered: Set<Int> = [4] // Busy
-    /// The numbered system cursors that actually exist (2–43, per Mousecape)
-    private static let numberedRange = 2...43
 
     private static func ringImage(points: CGFloat, diameter: CGFloat, scale: CGFloat) -> CGImage? {
         let px = Int(points * scale)
@@ -112,8 +109,8 @@ enum CircleCursor {
         guard !images.isEmpty else { return false }
         let cid = mainConn()
         var ok = false
-        let numbered = numberedRange.filter { !skippedNumbered.contains($0) }
-        let names = coreGraphicsNames + numbered.map { "com.apple.cursor.\($0)" }
+        // Exactly the 2.0 set: registering the full numbered range made the circle stop showing.
+        let names = coreGraphicsNames + [2, 3, 5, 11, 12, 13, 24, 26].map { "com.apple.cursor.\($0)" }
         for name in names {
             var seed: Int32 = 0
             let err = name.withCString { cName in
