@@ -93,6 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastPointerPoint = NSPoint.zero
     private var pointerStillSince = Date()
     private var hideCount = 0
+    private var arrowFallbackThisSession = false
+    private let warpQueue = DispatchQueue(label: "controllercursor.warp")
+    private var pendingWarp: CGPoint?
+    private let warpLock = NSLock()
     private var lastRehide = Date.distantPast
     private var pidIsControllerKeys: [pid_t: Bool] = [:]
     private var requestedPermission = false
@@ -181,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if on {
             followCursor()
             panel.orderFrontRegardless()
-            if hideArrow { hideSystemArrow() }
+            if hideArrow && !arrowFallbackThisSession { hideSystemArrow() }
             // Always attach to the main run loop, whichever thread asked
             pointerStillSince = Date()
             lastPointerPoint = currentCursorPoint()
@@ -194,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             followTimer?.invalidate()
             followTimer = nil
             ringView.pressed = false
+            arrowFallbackThisSession = false
             panel.orderOut(nil)
             restoreArrow()
         }
@@ -218,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         followCursor(to: p)
 
         // Apps and websites re-show the arrow when they switch to a hand or text cursor.
-        if cursorHiddenByUs, hideArrow, cursorIsVisibleFn?() != 0,
+        if cursorHiddenByUs, hideArrow, !arrowFallbackThisSession, cursorIsVisibleFn?() != 0,
            Date().timeIntervalSince(lastRehide) > 0.1 {
             CGDisplayHideCursor(CGMainDisplayID())
             hideCount += 1
@@ -228,21 +233,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !moved { checkForFrozenPointer() }
     }
 
+    /// Last-resort safety net: if the pointer still won't move while hidden, show the arrow
+    /// for the rest of this controller session instead of leaving you stuck.
     private func checkForFrozenPointer() {
         guard cursorHiddenByUs, sticksDeflected,
-              Date().timeIntervalSince(pointerStillSince) > 0.4 else { return }
-        hideArrow = false
+              Date().timeIntervalSince(pointerStillSince) > 0.6 else { return }
+        arrowFallbackThisSession = true
         restoreArrow()
-        rebuildMenu()
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "ControllerKeys froze the pointer"
-        alert.informativeText = """
-        ControllerKeys thinks a game locked the mouse because the arrow was hidden, so the arrow is back on.
+    }
 
-        To use the circle without the arrow: open ControllerKeys, select your Console Mode profile, go to Settings → FPS / Pointer-Lock Games, and set Relative Mouse Aiming to Off. Then turn Hide Arrow back on from the 🎮 menu.
-        """
-        alert.runModal()
+    /// Moves the real pointer off the main thread (each warp is a slow round trip to the
+    /// window server), keeping only the newest target if moves arrive faster than warps finish.
+    private func syncPointer(to point: CGPoint) {
+        warpLock.lock()
+        let alreadyQueued = pendingWarp != nil
+        pendingWarp = point
+        warpLock.unlock()
+        guard !alreadyQueued else { return }
+        warpQueue.async { [weak self] in
+            guard let self else { return }
+            self.warpLock.lock()
+            let target = self.pendingWarp
+            self.pendingWarp = nil
+            self.warpLock.unlock()
+            guard let target else { return }
+            CGWarpMouseCursorPosition(target)
+            CGAssociateMouseAndMouseCursorPosition(1) // cancel the warp's brief input freeze
+        }
     }
 
     private func hideSystemArrow() {
@@ -304,6 +321,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .leftMouseDown, .rightMouseDown: ringView.pressed = true
             case .leftMouseUp, .rightMouseUp: ringView.pressed = false
             default: break
+            }
+            // While the arrow is hidden, macOS stops moving the real pointer for ControllerKeys'
+            // events, so the pointer and ControllerKeys drift apart. Put the pointer where
+            // ControllerKeys says it is, and draw the circle there.
+            // (Applied to every move: for real mouse events the location already matches, so it's a no-op.)
+            if cursorHiddenByUs, !arrowFallbackThisSession,
+               [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged].contains(type) {
+                let loc = event.location
+                syncPointer(to: loc)
+                let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
+                let p = NSPoint(x: loc.x, y: primaryMaxY - loc.y)
+                lastPointerPoint = p
+                pointerStillSince = Date()
+                followCursor(to: p)
             }
         }
     }
