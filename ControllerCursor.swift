@@ -219,9 +219,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         followCursor(to: p)
 
-        // Clicks, app switches, links and text fields can bring the arrow back, and macOS won't
-        // reliably say so, so keep re-asserting the hide a few times a second.
-        if Date().timeIntervalSince(lastRehide) > 0.25 { reassertHide() }
 
         if !moved { checkForFrozenPointer() }
     }
@@ -255,16 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// macOS only hides the arrow on a 0 → 1 change of our hide count, so after something
+    /// re-shows it (a click activating another app), fully unhide and hide again.
     private func reassertHide() {
         guard cursorHiddenByUs, hideArrow, !arrowFallbackThisSession else { return }
-        // Keep the hide count small so switching back to the arrow stays instant
-        // (unhiding one level while still above zero never shows the arrow).
-        if hideCount >= 4 {
-            CGDisplayShowCursor(CGMainDisplayID())
-            hideCount -= 1
-        }
+        for _ in 0..<max(hideCount, 1) { CGDisplayShowCursor(CGMainDisplayID()) }
         CGDisplayHideCursor(CGMainDisplayID())
-        hideCount += 1
+        hideCount = 1
         lastRehide = Date()
     }
 
@@ -330,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp].contains(type) {
                 // The clicked app becomes active and macOS shows the arrow; hide it again right after
-                for delay in [0.02, 0.1, 0.3] {
+                for delay in [0.05, 0.2, 0.5] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reassertHide() }
                 }
             }
