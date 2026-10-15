@@ -89,8 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { defaults.set(newValue, forKey: "enabled") }
     }
     private var hideArrow: Bool {
-        get { defaults.object(forKey: "hideArrow") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "hideArrow") }
+        // Off by default: ControllerKeys' "Relative Mouse Aiming = Auto" treats a hidden arrow
+        // as an FPS game locking the mouse and freezes the pointer.
+        get { defaults.object(forKey: "hideArrowV2") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "hideArrowV2") }
     }
     private var ringSize: Double {
         get { defaults.object(forKey: "ringSize") as? Double ?? 44 }
@@ -347,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         on.state = enabled ? .on : .off
         menu.addItem(on)
 
-        let hide = NSMenuItem(title: "Hide Arrow While Using Controller", action: #selector(toggleHideArrow), keyEquivalent: "")
+        let hide = NSMenuItem(title: "Hide Arrow (needs ControllerKeys Relative Mouse Aiming: Off)", action: #selector(toggleHideArrow), keyEquivalent: "")
         hide.state = hideArrow ? .on : .off
         menu.addItem(hide)
 
