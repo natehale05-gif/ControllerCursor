@@ -55,6 +55,92 @@ final class RingView: NSView {
     }
 }
 
+// MARK: - System cursor swap (same private CoreGraphics calls Mousecape uses)
+
+enum CircleCursor {
+    private typealias MainConnFn = @convention(c) () -> Int32
+    private typealias RegisterFn = @convention(c) (Int32, UnsafeMutablePointer<CChar>, CBool, CBool,
+                                                   CGSize, CGPoint, UInt, CGFloat, CFArray,
+                                                   UnsafeMutablePointer<Int32>) -> Int32
+    private typealias UnregisterAllFn = @convention(c) (Int32) -> Int32
+    private typealias SetFn = @convention(c) (Int32, Int32) -> Int32
+
+    private static func sym<T>(_ name: String, _ type: T.Type) -> T? {
+        guard let p = dlsym(UnsafeMutableRawPointer(bitPattern: -2), name) else { return nil }
+        return unsafeBitCast(p, to: type)
+    }
+    private static let mainConn = sym("CGSMainConnectionID", MainConnFn.self)
+    private static let register = sym("CGSRegisterCursorWithImages", RegisterFn.self)
+    private static let unregisterAll = sym("CoreCursorUnregisterAll", UnregisterAllFn.self)
+    private static let coreSet = sym("CoreCursorSet", SetFn.self)
+
+    static var isSupported: Bool { mainConn != nil && register != nil && unregisterAll != nil }
+
+    /// Pointer-style cursors that become the circle: arrow, text, link/hand, context menu, drag.
+    /// Resize, busy and similar cursors keep their normal look so they still mean something.
+    private static let names = [
+        "com.apple.coregraphics.Arrow", "com.apple.coregraphics.ArrowCtx",
+        "com.apple.coregraphics.IBeam", "com.apple.coregraphics.IBeamXOR",
+        "com.apple.coregraphics.Alias", "com.apple.coregraphics.Copy", "com.apple.coregraphics.Move",
+        "com.apple.cursor.2", "com.apple.cursor.3", "com.apple.cursor.5", "com.apple.cursor.11",
+        "com.apple.cursor.12", "com.apple.cursor.13", "com.apple.cursor.24", "com.apple.cursor.26",
+    ]
+
+    private static func ringImage(points: CGFloat, diameter: CGFloat, scale: CGFloat) -> CGImage? {
+        let px = Int(points * scale)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        rep.size = NSSize(width: points, height: points)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        let view = RingView(frame: NSRect(x: 0, y: 0, width: points, height: points))
+        view.diameter = diameter
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.cgImage
+    }
+
+    /// Replaces the system pointer cursors with the circle. Returns false if macOS refused.
+    @discardableResult
+    static func apply(diameter: CGFloat) -> Bool {
+        guard isSupported, let mainConn, let register else { return false }
+        let points = diameter + 12
+        let images = [1.0, 2.0, 3.0].compactMap { ringImage(points: points, diameter: diameter, scale: $0) }
+        guard !images.isEmpty else { return false }
+        let cid = mainConn()
+        var ok = false
+        for name in names {
+            var seed: Int32 = 0
+            let err = name.withCString { cName in
+                register(cid, UnsafeMutablePointer(mutating: cName), true, true,
+                         CGSize(width: points, height: points), CGPoint(x: points / 2, y: points / 2),
+                         1, 0, images as CFArray, &seed)
+            }
+            if err == 0 { ok = true }
+        }
+        if ok { UserDefaults.standard.set(true, forKey: "circleCursorApplied") }
+        return ok
+    }
+
+    /// Puts every system cursor back to normal.
+    static func restore() {
+        guard let mainConn, let unregisterAll else { return }
+        let cid = mainConn()
+        if unregisterAll(cid) == 0, let coreSet {
+            for i in 0..<45 { _ = coreSet(cid, Int32(i)) }
+            _ = coreSet(cid, 0)
+        }
+        UserDefaults.standard.set(false, forKey: "circleCursorApplied")
+    }
+
+    /// If the app quit unexpectedly while the circle was applied, put the arrow back.
+    static func restoreIfLeftApplied() {
+        if UserDefaults.standard.bool(forKey: "circleCursorApplied") { restore() }
+    }
+}
+
 // MARK: - Event tap callback (C function)
 
 private func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
@@ -78,6 +164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventTap: CFMachPort?
 
     private var controllerMode = false
+    private var cursorSwapped = false
+    private var signalSources: [DispatchSourceSignal] = []
     private var cursorHiddenByUs = false
     private var lastControllerActivity = Date.distantPast
     private var lastPointerPoint = NSPoint.zero
@@ -96,11 +184,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         get { defaults.object(forKey: "enabled") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "enabled") }
     }
+    /// The arrow is never hidden any more: hiding it from a background app confuses ControllerKeys
+    /// and macOS keeps bringing it back. The circle replaces the arrow image instead.
     private var hideArrow: Bool {
-        // Off by default: ControllerKeys' "Relative Mouse Aiming = Auto" treats a hidden arrow
-        // as an FPS game locking the mouse and freezes the pointer.
-        get { defaults.object(forKey: "hideArrowV2") as? Bool ?? false }
-        set { defaults.set(newValue, forKey: "hideArrowV2") }
+        get { false }
+        set { }
+    }
+    /// true = the system cursor itself becomes the circle; false = circle drawn around the arrow
+    private var swapCursor: Bool {
+        get { defaults.object(forKey: "swapCursor") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "swapCursor") }
     }
     private var ringSize: Double {
         get { defaults.object(forKey: "ringSize") as? Double ?? 44 }
@@ -110,6 +203,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Allow this background app to hide the system arrow while the circle is showing
         allowBackgroundCursorHiding()
+        CircleCursor.restoreIfLeftApplied()
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler {
+                CircleCursor.restoreIfLeftApplied()
+                exit(0)
+            }
+            src.resume()
+            signalSources.append(src)
+        }
 
         buildPanel()
         buildMenu()
@@ -130,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         restoreArrow()
+        CircleCursor.restoreIfLeftApplied()
     }
 
     // MARK: Overlay panel
@@ -157,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ringView.frame = NSRect(x: 0, y: 0, width: size, height: size)
         ringView.diameter = ringSize
         followCursor()
+        if cursorSwapped { CircleCursor.apply(diameter: ringSize) }
     }
 
     /// Live pointer position straight from the window server, in AppKit (bottom-left) coordinates.
@@ -181,7 +287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controllerMode = on
         if on {
             followCursor()
-            panel.orderFrontRegardless()
+            if swapCursor && CircleCursor.apply(diameter: ringSize) {
+                cursorSwapped = true
+            } else {
+                panel.orderFrontRegardless()
+            }
             if hideArrow && !arrowFallbackThisSession { hideSystemArrow() }
             // Always attach to the main run loop, whichever thread asked
             pointerStillSince = Date()
@@ -197,6 +307,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ringView.pressed = false
             arrowFallbackThisSession = false
             panel.orderOut(nil)
+            if cursorSwapped {
+                CircleCursor.restore()
+                cursorSwapped = false
+            }
             restoreArrow()
         }
     }
@@ -450,9 +564,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         on.state = enabled ? .on : .off
         menu.addItem(on)
 
-        let hide = NSMenuItem(title: "Hide Arrow (needs ControllerKeys Relative Mouse Aiming: Off)", action: #selector(toggleHideArrow), keyEquivalent: "")
-        hide.state = hideArrow ? .on : .off
-        menu.addItem(hide)
+        let styleMenu = NSMenu()
+        let swap = NSMenuItem(title: "Circle Replaces Arrow", action: #selector(pickSwap), keyEquivalent: "")
+        swap.state = swapCursor ? .on : .off
+        swap.isEnabled = CircleCursor.isSupported
+        let around = NSMenuItem(title: "Circle Around Arrow", action: #selector(pickAround), keyEquivalent: "")
+        around.state = swapCursor ? .off : .on
+        [swap, around].forEach { $0.target = self; styleMenu.addItem($0) }
+        let styleItem = NSMenuItem(title: "Cursor Style", action: nil, keyEquivalent: "")
+        styleItem.submenu = styleMenu
+        menu.addItem(styleItem)
 
         let sizeMenu = NSMenu()
         for (label, value) in [("Small", 32.0), ("Medium", 44.0), ("Large", 56.0), ("Extra Large", 72.0)] {
@@ -480,6 +601,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleEnabled() {
         enabled.toggle()
         if !enabled { setControllerMode(false) }
+        rebuildMenu()
+    }
+
+    @objc private func pickSwap() { switchStyle(swap: true) }
+    @objc private func pickAround() { switchStyle(swap: false) }
+
+    private func switchStyle(swap: Bool) {
+        let wasOn = controllerMode
+        if wasOn { setControllerMode(false) }
+        swapCursor = swap
+        if wasOn { setControllerMode(true) }
         rebuildMenu()
     }
 
