@@ -18,16 +18,6 @@ private func allowBackgroundCursorHiding() {
     _ = unsafeBitCast(b, to: SetPropFn.self)(conn, conn, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
 }
 
-/// Same check ControllerKeys uses to see whether the system arrow is currently visible.
-private let cursorIsVisibleFn: (@convention(c) () -> Int32)? = {
-    for name in ["CGCursorIsVisible", "SLCursorIsVisible"] {
-        if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), name) {
-            return unsafeBitCast(sym, to: (@convention(c) () -> Int32).self)
-        }
-    }
-    return nil
-}()
-
 // MARK: - Ring drawing
 
 final class RingView: NSView {
@@ -129,6 +119,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.pidIsControllerKeys.removeAll() }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            for delay in [0.0, 0.1, 0.3] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self?.reassertHide() }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -222,13 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         followCursor(to: p)
 
-        // Apps and websites re-show the arrow when they switch to a hand or text cursor.
-        if cursorHiddenByUs, hideArrow, !arrowFallbackThisSession, cursorIsVisibleFn?() != 0,
-           Date().timeIntervalSince(lastRehide) > 0.1 {
-            CGDisplayHideCursor(CGMainDisplayID())
-            hideCount += 1
-            lastRehide = Date()
-        }
+        // Clicks, app switches, links and text fields can bring the arrow back, and macOS won't
+        // reliably say so, so keep re-asserting the hide a few times a second.
+        if Date().timeIntervalSince(lastRehide) > 0.25 { reassertHide() }
 
         if !moved { checkForFrozenPointer() }
     }
@@ -260,6 +253,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             CGWarpMouseCursorPosition(target)
             CGAssociateMouseAndMouseCursorPosition(1) // cancel the warp's brief input freeze
         }
+    }
+
+    private func reassertHide() {
+        guard cursorHiddenByUs, hideArrow, !arrowFallbackThisSession else { return }
+        // Keep the hide count small so switching back to the arrow stays instant
+        // (unhiding one level while still above zero never shows the arrow).
+        if hideCount >= 4 {
+            CGDisplayShowCursor(CGMainDisplayID())
+            hideCount -= 1
+        }
+        CGDisplayHideCursor(CGMainDisplayID())
+        hideCount += 1
+        lastRehide = Date()
     }
 
     private func hideSystemArrow() {
@@ -321,6 +327,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .leftMouseDown, .rightMouseDown: ringView.pressed = true
             case .leftMouseUp, .rightMouseUp: ringView.pressed = false
             default: break
+            }
+            if [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp].contains(type) {
+                // The clicked app becomes active and macOS shows the arrow; hide it again right after
+                for delay in [0.02, 0.1, 0.3] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reassertHide() }
+                }
             }
             // While the arrow is hidden, macOS stops moving the real pointer for ControllerKeys'
             // events, so the pointer and ControllerKeys drift apart. Put the pointer where
