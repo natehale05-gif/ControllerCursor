@@ -76,15 +76,14 @@ enum CircleCursor {
 
     static var isSupported: Bool { mainConn != nil && register != nil && unregisterAll != nil }
 
-    /// Pointer-style cursors that become the circle: arrow, text, link/hand, context menu, drag.
-    /// Resize, busy and similar cursors keep their normal look so they still mean something.
-    private static let names = [
+    /// Every cursor apps can switch to becomes the circle (arrow, text, link hand, buttons,
+    /// resize, drag…), except the busy/wait spinners and the blank cursor.
+    private static let coreGraphicsNames = [
         "com.apple.coregraphics.Arrow", "com.apple.coregraphics.ArrowCtx",
         "com.apple.coregraphics.IBeam", "com.apple.coregraphics.IBeamXOR",
         "com.apple.coregraphics.Alias", "com.apple.coregraphics.Copy", "com.apple.coregraphics.Move",
-        "com.apple.cursor.2", "com.apple.cursor.3", "com.apple.cursor.5", "com.apple.cursor.11",
-        "com.apple.cursor.12", "com.apple.cursor.13", "com.apple.cursor.24", "com.apple.cursor.26",
     ]
+    private static let skippedNumbered: Set<Int> = [4] // Busy
 
     private static func ringImage(points: CGFloat, diameter: CGFloat, scale: CGFloat) -> CGImage? {
         let px = Int(points * scale)
@@ -111,6 +110,10 @@ enum CircleCursor {
         guard !images.isEmpty else { return false }
         let cid = mainConn()
         var ok = false
+        let numbered = (0..<45).filter { !skippedNumbered.contains($0) }
+        // Like Mousecape: load each numbered system cursor before replacing it
+        if let coreSet { for i in numbered { _ = coreSet(cid, Int32(i)) } }
+        let names = coreGraphicsNames + numbered.map { "com.apple.cursor.\($0)" }
         for name in names {
             var seed: Int32 = 0
             let err = name.withCString { cName in
@@ -120,7 +123,10 @@ enum CircleCursor {
             }
             if err == 0 { ok = true }
         }
-        if ok { UserDefaults.standard.set(true, forKey: "circleCursorApplied") }
+        if ok {
+            UserDefaults.standard.set(true, forKey: "circleCursorApplied")
+            _ = coreSet?(cid, 0) // show the circle right away
+        }
         return ok
     }
 
