@@ -217,6 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let displayScaler = DisplayScaler()
     private var lastDisplayChange = Date.distantPast
     private var shrinkWork: DispatchWorkItem?
+    private var keyboardForcedNormal = false
+    private var keyboardWatchTimer: Timer?
     private var cursorSwapped = false
     private var signalSources: [DispatchSourceSignal] = []
     private var cursorHiddenByUs = false
@@ -277,6 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         buildPanel()
         buildMenu()
+        let kbTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.watchKeyboard() }
+        RunLoop.main.add(kbTimer, forMode: .common)
+        keyboardWatchTimer = kbTimer
         startControllerMonitoring()
         startEventTap()
 
@@ -348,7 +353,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controllerMode = on
         if on {
             shrinkWork?.cancel()
-            if displayScaler.scaleUp(factor: screenScale) { lastDisplayChange = Date() }
+            if controllerKeysKeyboardVisible() {
+                keyboardForcedNormal = screenScale < 1
+            } else if displayScaler.scaleUp(factor: screenScale) {
+                lastDisplayChange = Date()
+            }
             followCursor()
             if swapCursor && CircleCursor.apply(diameter: ringSize) {
                 cursorSwapped = true
@@ -384,6 +393,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             shrinkWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        }
+    }
+
+    /// Is ControllerKeys' on-screen keyboard showing? (its large floating panel)
+    private func controllerKeysKeyboardVisible() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else { return false }
+        let floatingLevel = Int(CGWindowLevelForKey(.floatingWindow))
+        for w in list {
+            guard let pid = w[kCGWindowOwnerPID as String] as? Int32, isControllerKeys(pid),
+                  let layer = w[kCGWindowLayer as String] as? Int, layer == floatingLevel,
+                  let b = w[kCGWindowBounds as String] as? [String: Any],
+                  let width = b["Width"] as? Double, let height = b["Height"] as? Double
+            else { continue }
+            if width > 400 && height > 150 { return true }
+        }
+        return false
+    }
+
+    /// The keyboard is drawn at a fixed size, so it would grow with the bigger screen.
+    /// Show it at normal size: drop to the normal screen size while it's open.
+    private func watchKeyboard() {
+        guard screenScale < 1 || keyboardForcedNormal else { return }
+        let open = controllerKeysKeyboardVisible()
+        if open && displayScaler.isScaled {
+            if displayScaler.restore() { lastDisplayChange = Date() }
+            keyboardForcedNormal = true
+        } else if !open && keyboardForcedNormal {
+            keyboardForcedNormal = false
+            if controllerMode, displayScaler.scaleUp(factor: screenScale) { lastDisplayChange = Date() }
         }
     }
 
