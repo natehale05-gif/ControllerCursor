@@ -141,6 +141,56 @@ enum CircleCursor {
     }
 }
 
+// MARK: - Bigger screen while using the controller
+
+/// Switches the main display to a larger "Looks like" scale (like choosing Larger Text in
+/// System Settings → Displays) and back. Uses app-only configuration, so macOS puts the normal
+/// size back automatically if this app quits or crashes.
+final class DisplayScaler {
+    private var originalMode: CGDisplayMode?
+    private var display: CGDirectDisplayID = CGMainDisplayID()
+    private(set) var isScaled = false
+
+    /// factor < 1 makes everything bigger (0.85 ≈ one step, 0.72 ≈ two steps)
+    func scaleUp(factor: Double) -> Bool {
+        guard !isScaled, factor < 1 else { return false }
+        display = CGMainDisplayID()
+        guard let current = CGDisplayCopyDisplayMode(display) else { return false }
+        let opts = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
+        guard let all = CGDisplayCopyAllDisplayModes(display, opts) as? [CGDisplayMode] else { return false }
+        let hiDPI = current.pixelWidth > current.width
+        let aspect = Double(current.width) / Double(current.height)
+        let target = Double(current.width) * factor
+        let candidates = all.filter { m in
+            m.isUsableForDesktopGUI() && m.width < current.width && m.height > 0 &&
+            abs(Double(m.width) / Double(m.height) - aspect) < 0.02 &&
+            (m.pixelWidth > m.width) == hiDPI
+        }
+        func score(_ m: CGDisplayMode) -> (Double, Double) {
+            (abs(Double(m.width) - target), abs(m.refreshRate - current.refreshRate))
+        }
+        guard let best = candidates.min(by: { score($0) < score($1) }) else { return false }
+        guard apply(best) else { return false }
+        originalMode = current
+        isScaled = true
+        return true
+    }
+
+    @discardableResult
+    func restore() -> Bool {
+        guard isScaled, let originalMode else { return false }
+        isScaled = false
+        return apply(originalMode)
+    }
+
+    private func apply(_ mode: CGDisplayMode) -> Bool {
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else { return false }
+        CGConfigureDisplayWithDisplayMode(config, display, mode, nil)
+        return CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
+    }
+}
+
 // MARK: - Event tap callback (C function)
 
 private func tapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
@@ -164,6 +214,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventTap: CFMachPort?
 
     private var controllerMode = false
+    private let displayScaler = DisplayScaler()
+    private var lastDisplayChange = Date.distantPast
+    private var shrinkWork: DispatchWorkItem?
     private var cursorSwapped = false
     private var signalSources: [DispatchSourceSignal] = []
     private var cursorHiddenByUs = false
@@ -196,6 +249,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var swapCursor: Bool {
         get { false }
         set { }
+    }
+    /// 1.0 = off, 0.85 = bigger, 0.72 = much bigger
+    private var screenScale: Double {
+        get { defaults.object(forKey: "screenScale") as? Double ?? 0.85 }
+        set { defaults.set(newValue, forKey: "screenScale") }
     }
     private var ringSize: Double {
         get { defaults.object(forKey: "ringSize") as? Double ?? 44 }
@@ -235,6 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        displayScaler.restore()
         restoreArrow()
         CircleCursor.restoreIfLeftApplied()
     }
@@ -288,6 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard on != controllerMode else { return }
         controllerMode = on
         if on {
+            shrinkWork?.cancel()
+            if displayScaler.scaleUp(factor: screenScale) { lastDisplayChange = Date() }
             followCursor()
             if swapCursor && CircleCursor.apply(diameter: ringSize) {
                 cursorSwapped = true
@@ -314,7 +375,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 cursorSwapped = false
             }
             restoreArrow()
+            // Go back to normal size once you've stuck with the mouse for a moment,
+            // so a quick bump of the trackpad doesn't flip the whole screen.
+            shrinkWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.controllerMode else { return }
+                if self.displayScaler.restore() { self.lastDisplayChange = Date() }
+            }
+            shrinkWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
         }
+    }
+
+    /// The pointer jumps when the screen size changes; don't mistake that for the mouse.
+    private var settlingAfterDisplayChange: Bool {
+        Date().timeIntervalSince(lastDisplayChange) < 2.0
     }
 
     /// If ControllerKeys froze the pointer because the arrow is hidden (its "Relative Mouse
@@ -322,6 +397,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         guard controllerMode else { return }
         let p = currentCursorPoint()
+        if settlingAfterDisplayChange {
+            lastPointerPoint = p
+            pointerStillSince = Date()
+            followCursor(to: p)
+            return
+        }
         let moved = p != lastPointerPoint
         lastPointerPoint = p
 
@@ -430,6 +511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ControllerKeys only counts if the controller was really used in the last second;
         // anything else the controller isn't producing came from a real mouse/trackpad.
         let recentlyUsed = Date().timeIntervalSince(lastControllerActivity) < 1.0
+        if settlingAfterDisplayChange && !controllerDriving && controllerMode { return }
         setControllerMode(controllerDriving || (fromControllerKeys && recentlyUsed))
 
         if controllerMode {
@@ -578,6 +660,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sizeItem.submenu = sizeMenu
         menu.addItem(sizeItem)
 
+        let screenMenu = NSMenu()
+        for (label, value) in [("Off", 1.0), ("Bigger", 0.85), ("Much Bigger", 0.72)] {
+            let item = NSMenuItem(title: label, action: #selector(pickScreenScale(_:)), keyEquivalent: "")
+            item.representedObject = value
+            item.state = screenScale == value ? .on : .off
+            item.target = self
+            screenMenu.addItem(item)
+        }
+        let screenItem = NSMenuItem(title: "Bigger Screen With Controller", action: nil, keyEquivalent: "")
+        screenItem.submenu = screenMenu
+        menu.addItem(screenItem)
+
         menu.addItem(.separator())
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -610,6 +704,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleHideArrow() {
         hideArrow.toggle()
         if controllerMode { hideArrow ? hideSystemArrow() : restoreArrow() }
+        rebuildMenu()
+    }
+
+    @objc private func pickScreenScale(_ sender: NSMenuItem) {
+        guard let v = sender.representedObject as? Double else { return }
+        screenScale = v
+        if displayScaler.restore() { lastDisplayChange = Date() }
+        if controllerMode, displayScaler.scaleUp(factor: v) { lastDisplayChange = Date() }
         rebuildMenu()
     }
 
