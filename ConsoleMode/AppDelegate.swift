@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     // MARK: Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        replaceControllerCursor()
         buildRing()
         buildMenuBar()
 
@@ -211,6 +212,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         let maxY = NSScreen.screens.first?.frame.maxY ?? 0
         let s = ringPanel.frame.size
         ringPanel.setFrameOrigin(NSPoint(x: loc.x - s.width / 2, y: maxY - loc.y - s.height / 2))
+    }
+
+    // MARK: Taking over from Controller Cursor
+
+    /// Console Mode replaces the older Controller Cursor app: bring over its settings once,
+    /// quit it (it puts the normal cursor and screen size back as it quits), and move it to the Trash.
+    private func replaceControllerCursor() {
+        let oldID = "com.nate.controllercursor"
+        if !UserDefaults.standard.bool(forKey: "importedControllerCursor"),
+           let old = UserDefaults(suiteName: oldID) {
+            if let ring = old.object(forKey: "ringSize") as? Double { settings.data.circleSize = ring }
+            if let scale = old.object(forKey: "screenScale") as? Double { settings.data.screenScale = scale }
+            if let keys = old.object(forKey: "keyboardKeySize") as? Double { settings.data.keyboardKeySize = keys }
+            UserDefaults.standard.set(true, forKey: "importedControllerCursor")
+        }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: oldID)
+        running.forEach { $0.terminate() }
+        // Give it a moment to quit, then move it to the Trash (recoverable)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (running.isEmpty ? 0 : 1.5)) {
+            NSRunningApplication.runningApplications(withBundleIdentifier: oldID).forEach { $0.forceTerminate() }
+            var urls: [URL] = []
+            if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: oldID) { urls.append(u) }
+            for dir in ["/Applications", NSHomeDirectory() + "/Applications"] {
+                let u = URL(fileURLWithPath: dir).appendingPathComponent("Controller Cursor.app")
+                if FileManager.default.fileExists(atPath: u.path), !urls.contains(u) { urls.append(u) }
+            }
+            let ownPath = Bundle.main.bundleURL.standardizedFileURL
+            let toTrash = urls.filter { $0.standardizedFileURL != ownPath }
+            if !toTrash.isEmpty { NSWorkspace.shared.recycle(toTrash) { _, _ in } }
+        }
     }
 
     // MARK: ControllerKeys
