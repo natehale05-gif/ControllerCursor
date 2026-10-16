@@ -8,7 +8,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swift --version
+      - name: Import signing certificate
+        run: |
+          security create-keychain -p ci build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+          security unlock-keychain -p ci build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security import Signing/signing.p12 -k build.keychain -P consolemode -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          security find-identity -p codesigning build.keychain
       - run: ./build.sh
+        env:
+          SIGN_ID: Console Mode Signing
       - uses: actions/upload-artifact@v4
         with:
           name: Console-Mode

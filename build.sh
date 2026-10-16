@@ -23,8 +23,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.nate.consolemode</string>
   <key>CFBundleExecutable</key><string>ConsoleMode</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.6</string>
-  <key>CFBundleVersion</key><string>7</string>
+  <key>CFBundleShortVersionString</key><string>1.7</string>
+  <key>CFBundleVersion</key><string>8</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -32,7 +32,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP"
+# Stable signature (same certificate every build) so macOS keeps Accessibility permission across updates
+codesign --force --sign "${SIGN_ID:--}" --identifier com.nate.consolemode "$APP"
 codesign --verify --verbose "$APP"
+codesign -d -r- "$APP"
 (cd build && ditto -c -k --keepParent "Console Mode.app" "Console-Mode.zip")
 echo "Built build/Console-Mode.zip"
