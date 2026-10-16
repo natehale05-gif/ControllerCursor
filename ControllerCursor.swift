@@ -700,7 +700,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(sizeItem)
 
         let screenMenu = NSMenu()
-        for (label, value) in [("Off", 1.0), ("Bigger", 0.85), ("Much Bigger", 0.72)] {
+        for (label, value) in [("Off", 1.0), ("Bigger", 0.85), ("Much Bigger", 0.72),
+                               ("Huge", 0.6), ("Extra Huge", 0.5), ("Largest Possible", 0.01)] {
             let item = NSMenuItem(title: label, action: #selector(pickScreenScale(_:)), keyEquivalent: "")
             item.representedObject = value
             item.state = screenScale == value ? .on : .off
