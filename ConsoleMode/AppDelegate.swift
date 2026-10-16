@@ -111,6 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     func controllerChanged() { refreshStatus() }
 
+    /// The stick or touchpad moved the pointer: aim with the circle again instead of the D-pad highlight
+    func pointerMovedByController() { keyboard.clearFocus() }
+
     var keyboardVisible: Bool { keyboard.isVisible }
 
     func toggleKeyboard() {
@@ -121,10 +124,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     /// PS5 keyboard controls while the keyboard is open
     func keyboardButton(_ button: PadButton, down: Bool) -> Bool {
-        let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .r3, .options, .create]
+        // ✕ types the highlighted key after D-pad navigation; otherwise it clicks under the circle
+        if button == .cross {
+            guard down else { return true }
+            guard keyboard.activateFocused() else { return false }
+            controllers.rumble(0.3)
+            return true
+        }
+        let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .r3, .options, .create,
+                                       .up, .down, .left, .right]
         guard handled.contains(button) else { return false }
         guard down else { return true }
         switch button {
+        case .up: keyboard.moveFocus(.up)
+        case .down: keyboard.moveFocus(.down)
+        case .left: keyboard.moveFocus(.left)
+        case .right: keyboard.moveFocus(.right)
         case .square: keyboard.backspace()
         case .r3: keyboard.typeSpace()
         case .triangle, .circle, .options: keyboard.hide()

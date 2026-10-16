@@ -10,6 +10,7 @@ protocol ControllerDelegate: AnyObject {
     /// While the keyboard is open, buttons act like a PS5 keyboard. Return true if handled.
     func keyboardButton(_ button: PadButton, down: Bool) -> Bool
     func controllerChanged()
+    func pointerMovedByController()
 }
 
 /// Reads the DualSense directly and turns it into Mac input.
@@ -242,7 +243,16 @@ final class ControllerManager {
     }
 
     private func buttonHeld(_ b: PadButton, _ p: inout Press, now: Date) {
-        if p.handledByKeyboard { return }
+        if p.handledByKeyboard {
+            // Holding a D-pad direction keeps moving through the keyboard
+            guard [.up, .down, .left, .right].contains(b) else { return }
+            if p.nextRepeat == nil { p.nextRepeat = p.start.addingTimeInterval(0.35) }
+            if let next = p.nextRepeat, now >= next {
+                _ = delegate?.keyboardButton(b, down: true)
+                p.nextRepeat = now.addingTimeInterval(0.08)
+            }
+            return
+        }
         if !p.pressFired, !p.holdFired, p.binding.hold.kind != .none, now.timeIntervalSince(p.start) >= holdTime {
             perform(p.binding.hold, phase: .tap)
             p.holdFired = true
@@ -351,6 +361,7 @@ final class ControllerManager {
             delegate?.controllerActivity()
             let speed = CGFloat(250 + d.stickSpeed * 2250) * CGFloat(dt)
             out.movePointer(dx: vx * speed, dy: -vy * speed)
+            delegate?.pointerMovedByController()
         }
         // Right stick: scroll
         if let (vx, vy) = shaped(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value,
@@ -393,6 +404,7 @@ final class ControllerManager {
                     touchTravel += hypot(x - last.x, y - last.y)
                     out.movePointer(dx: dx, dy: dy)
                     delegate?.controllerActivity()
+                    delegate?.pointerMovedByController()
                 }
             } else {
                 touchStart = now

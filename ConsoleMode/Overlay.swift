@@ -98,6 +98,8 @@ final class DisplayScaler {
 final class KeyView: NSView {
     let label: String
     var isActive = false { didSet { needsDisplay = true } }
+    /// Highlighted by D-pad navigation
+    var isFocused = false { didSet { needsDisplay = true } }
     private let action: () -> Void
     private var hovering = false { didSet { needsDisplay = true } }
     private var pressed = false { didSet { needsDisplay = true } }
@@ -127,7 +129,15 @@ final class KeyView: NSView {
         if wasPressed { action() }
     }
 
+    /// Press this key from the controller (✕ while it's highlighted)
+    func activate() {
+        pressed = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.pressed = false }
+        action()
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        let hovering = self.hovering || isFocused
         let rect = bounds.insetBy(dx: bounds.height * 0.05, dy: bounds.height * 0.05)
         let path = NSBezierPath(roundedRect: rect, xRadius: rect.height * 0.22, yRadius: rect.height * 0.22)
         let blue = NSColor(calibratedRed: 0.0, green: 0.44, blue: 0.95, alpha: 1)
@@ -180,6 +190,7 @@ final class ControllerKeyboard {
     func hide() {
         panel?.orderOut(nil)
         shift = false
+        focusActive = false
     }
 
     /// Re-lay out at the current screen size (call after the display scale changes)
@@ -227,6 +238,62 @@ final class ControllerKeyboard {
         return r
     }
 
+    // MARK: D-pad navigation
+
+    private var grid: [[KeyView]] = []
+    private var focusRow = 2
+    private var focusCol = 4
+    /// true once the D-pad has been used; moving the pointer turns it off
+    private(set) var focusActive = false
+
+    private func applyFocus() {
+        for (r, row) in grid.enumerated() {
+            for (c, key) in row.enumerated() { key.isFocused = focusActive && r == focusRow && c == focusCol }
+        }
+    }
+
+    enum Direction { case up, down, left, right }
+
+    func moveFocus(_ dir: Direction) {
+        guard !grid.isEmpty else { return }
+        if !focusActive {
+            focusActive = true
+            clampFocus()
+            applyFocus()
+            return
+        }
+        let current = grid[focusRow][focusCol].frame.midX
+        switch dir {
+        case .left: focusCol = (focusCol - 1 + grid[focusRow].count) % grid[focusRow].count
+        case .right: focusCol = (focusCol + 1) % grid[focusRow].count
+        case .up, .down:
+            focusRow = (focusRow + (dir == .up ? -1 : 1) + grid.count) % grid.count
+            // Land on the key most directly above/below
+            let row = grid[focusRow]
+            focusCol = row.indices.min { abs(row[$0].frame.midX - current) < abs(row[$1].frame.midX - current) } ?? 0
+        }
+        applyFocus()
+    }
+
+    /// Press the highlighted key. Returns false if nothing is highlighted.
+    func activateFocused() -> Bool {
+        guard focusActive, focusRow < grid.count, focusCol < grid[focusRow].count else { return false }
+        let r = focusRow, c = focusCol
+        grid[r][c].activate()
+        return true
+    }
+
+    func clearFocus() {
+        guard focusActive else { return }
+        focusActive = false
+        applyFocus()
+    }
+
+    private func clampFocus() {
+        focusRow = min(max(0, focusRow), max(0, grid.count - 1))
+        if !grid.isEmpty { focusCol = min(max(0, focusCol), grid[focusRow].count - 1) }
+    }
+
     private func layout() {
         guard let screen = NSScreen.screens.first else { return }
         let u = keySize * pointRatio
@@ -246,16 +313,22 @@ final class ControllerKeyboard {
         content.layer?.cornerRadius = u * 0.35
         content.layer?.masksToBounds = true
 
+        grid = []
         for (i, row) in allRows.enumerated() {
             var x = (width - rowWidths[i]) / 2
             let y = height - pad - CGFloat(i + 1) * u
+            var keys: [KeyView] = []
             for key in row {
                 let v = KeyView(label: key.label, isActive: key.active, action: key.action)
                 v.frame = NSRect(x: x, y: y, width: key.width * u, height: u)
                 content.addSubview(v)
+                keys.append(v)
                 x += key.width * u
             }
+            grid.append(keys)
         }
+        clampFocus()
+        applyFocus()
         panel.contentView = content
         let vf = screen.visibleFrame
         panel.setFrame(NSRect(x: vf.midX - width / 2, y: vf.minY + u * 0.4, width: width, height: height),

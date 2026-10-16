@@ -275,7 +275,7 @@ struct ButtonsPane: View {
                 }
             } footer: {
                 HStack {
-                    Text("\(style.quickMenuName) opens the Quick Menu while held. While the keyboard is open: □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
+                    Text("\(style.quickMenuName) opens the Quick Menu while held. While the keyboard is open: D-pad moves between keys and ✕ types, □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Restore \(style.title) Layout") { settings.resetButtons() }
@@ -440,7 +440,7 @@ struct DisplayPane: View {
                     Text("Large").tag(76.0)
                     Text("Extra Large").tag(90.0)
                 }
-                Text("The keyboard stays this size whatever the screen size is. Aim with the pointer and press ✕, or use □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
+                Text("The keyboard stays this size whatever the screen size is. Move between keys with the D-pad and press ✕, or aim with the circle. □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
