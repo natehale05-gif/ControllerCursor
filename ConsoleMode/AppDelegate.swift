@@ -121,13 +121,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     /// PS5 keyboard controls while the keyboard is open
     func keyboardButton(_ button: PadButton, down: Bool) -> Bool {
-        let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .options, .create]
+        let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .r3, .options, .create]
         guard handled.contains(button) else { return false }
         guard down else { return true }
         switch button {
         case .square: keyboard.backspace()
-        case .triangle: keyboard.typeSpace()
-        case .circle, .options: keyboard.hide()
+        case .r3: keyboard.typeSpace()
+        case .triangle, .circle, .options: keyboard.hide()
         case .l1: keyboard.cursorLeft()
         case .r1: keyboard.cursorRight()
         case .r2: keyboard.returnKey()
@@ -283,6 +283,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         let enabled = item("Use Controller", #selector(toggleEnabled))
         enabled.state = settings.data.enabled ? .on : .off
         menu.addItem(enabled)
+        let profMenu = NSMenu()
+        for prof in settings.data.profiles {
+            let pi = NSMenuItem(title: prof.name, action: #selector(pickProfile(_:)), keyEquivalent: "")
+            pi.representedObject = prof.id
+            pi.target = self
+            pi.state = prof.id == settings.data.activeProfileID ? .on : .off
+            profMenu.addItem(pi)
+        }
+        let profItem = NSMenuItem(title: "Profile: \(settings.activeProfile.name)", action: nil, keyEquivalent: "")
+        profItem.submenu = profMenu
+        menu.addItem(profItem)
         menu.addItem(item("Show Keyboard", #selector(menuKeyboard)))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
@@ -298,6 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     @objc private func toggleEnabled() { settings.data.enabled.toggle() }
+    @objc private func pickProfile(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? UUID { settings.data.activeProfileID = id }
+    }
     @objc private func menuKeyboard() { toggleKeyboard() }
 
     @objc func openAccessibility() {

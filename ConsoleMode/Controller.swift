@@ -75,6 +75,7 @@ final class ControllerManager {
             pad.buttonHome?.preferredSystemGestureState = .disabled
             pad.buttonOptions?.preferredSystemGestureState = .disabled
         }
+        settings.autoSelect(for: style)
         applyLight()
         if let engine = c.haptics?.createEngine(withLocality: .default) {
             engine.isAutoShutdownEnabled = true
@@ -83,9 +84,62 @@ final class ControllerManager {
         delegate?.controllerChanged()
     }
 
+    /// PlayStation or Xbox, from the kind of controller connected
+    var style: ControllerStyle {
+        guard let pad = controller?.extendedGamepad else { return settings.activeProfile.style }
+        if pad is GCDualSenseGamepad || pad is GCDualShockGamepad { return .playstation }
+        if pad is GCXboxGamepad { return .xbox }
+        return settings.activeProfile.style
+    }
+
+    private var lightTimer: Timer?
+    private var partyHue: Double = 0
+    private var lastLight: (Float, Float, Float)?
+
+    /// Light bar: a solid color, a slow rainbow (Party), or the charge level (Battery)
     func applyLight() {
-        let d = settings.data
-        controller?.light?.color = GCColor(red: Float(d.lightRed), green: Float(d.lightGreen), blue: Float(d.lightBlue))
+        lightTimer?.invalidate()
+        lightTimer = nil
+        lastLight = nil
+        guard controller?.light != nil else { return }
+        switch settings.data.lightMode {
+        case .solid:
+            let d = settings.data
+            setLight(Float(d.lightRed), Float(d.lightGreen), Float(d.lightBlue))
+        case .party:
+            let t = Timer(timeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.partyHue = (self.partyHue + 0.012).truncatingRemainder(dividingBy: 1)
+                let c = NSColor(hue: self.partyHue, saturation: 1, brightness: 1, alpha: 1)
+                self.setLight(Float(c.redComponent), Float(c.greenComponent), Float(c.blueComponent))
+            }
+            RunLoop.main.add(t, forMode: .common)
+            lightTimer = t
+        case .battery:
+            showBattery()
+            let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.showBattery() }
+            RunLoop.main.add(t, forMode: .common)
+            lightTimer = t
+        }
+    }
+
+    /// Green when full, yellow in the middle, red when low; pulses while charging
+    private func showBattery() {
+        guard let level = batteryLevel else { setLight(1, 1, 1); return }
+        let hue = Double(max(0, min(1, level))) * 0.33   // 0 = red … 0.33 = green
+        var brightness = 1.0
+        if charging {
+            let phase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2) / 2
+            brightness = 0.35 + 0.65 * (0.5 + 0.5 * sin(phase * 2 * .pi))
+        }
+        let c = NSColor(hue: hue, saturation: 1, brightness: brightness, alpha: 1)
+        setLight(Float(c.redComponent), Float(c.greenComponent), Float(c.blueComponent))
+    }
+
+    private func setLight(_ r: Float, _ g: Float, _ b: Float) {
+        if let l = lastLight, abs(l.0 - r) + abs(l.1 - g) + abs(l.2 - b) < 0.01 { return }
+        lastLight = (r, g, b)
+        controller?.light?.color = GCColor(red: r, green: g, blue: b)
     }
 
     func rumble(_ intensity: Float = 0.6) {

@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 struct SettingsActions {
     var openAccessibility: () -> Void
@@ -8,12 +9,13 @@ struct SettingsActions {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case general, controller, buttons, pointer, display
+    case general, controller, profiles, buttons, pointer, display
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: return "General"
         case .controller: return "Controller"
+        case .profiles: return "Profiles"
         case .buttons: return "Buttons"
         case .pointer: return "Pointer & Scrolling"
         case .display: return "Display & Keyboard"
@@ -23,6 +25,7 @@ enum Pane: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .controller: return "gamecontroller"
+        case .profiles: return "person.2.crop.square.stack"
         case .buttons: return "circle.grid.cross"
         case .pointer: return "cursorarrow.motionlines"
         case .display: return "textformat.size"
@@ -32,6 +35,7 @@ enum Pane: String, CaseIterable, Identifiable {
         switch self {
         case .general: return .gray
         case .controller: return .blue
+        case .profiles: return .purple
         case .buttons: return .indigo
         case .pointer: return .orange
         case .display: return .teal
@@ -67,6 +71,7 @@ struct SettingsView: View {
                 switch pane ?? .general {
                 case .general: GeneralPane(settings: settings, status: status, actions: actions)
                 case .controller: ControllerPane(settings: settings, status: status, actions: actions)
+                case .profiles: ProfilesPane(settings: settings)
                 case .buttons: ButtonsPane(settings: settings)
                 case .pointer: PointerPane(settings: settings)
                 case .display: DisplayPane(settings: settings)
@@ -188,6 +193,20 @@ struct ControllerPane: View {
             }
 
             Section("Light Bar") {
+                Picker("Mode", selection: $settings.data.lightMode) {
+                    ForEach(LightMode.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                switch settings.data.lightMode {
+                case .party:
+                    Text("Slowly cycles through every color.").font(.caption).foregroundStyle(.secondary)
+                case .battery:
+                    Text("Green when charged, yellow around half, red when low. Pulses while charging.")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .solid:
+                    EmptyView()
+                }
+                if settings.data.lightMode == .solid {
                 ColorPicker("Color", selection: lightColor, supportsOpacity: false)
                 HStack {
                     ForEach([("Blue", Color(red: 0, green: 0.35, blue: 1)), ("White", .white),
@@ -200,6 +219,7 @@ struct ControllerPane: View {
                         .buttonStyle(.plain)
                         .help(item.0)
                     }
+                }
                 }
             }
 
@@ -229,32 +249,36 @@ struct ButtonsPane: View {
     @State private var quickMenu = false
 
     private var buttons: [PadButton] { PadButton.allCases.filter { $0 != .l2 } }
+    private var style: ControllerStyle { settings.activeProfile.style }
 
     var body: some View {
         Form {
             Section {
+                Picker("Profile", selection: $settings.data.activeProfileID) {
+                    ForEach(settings.data.profiles) { p in Text(p.name).tag(p.id) }
+                }
                 Picker("Layer", selection: $quickMenu) {
                     Text("Standard").tag(false)
-                    Text("L2 Quick Menu").tag(true)
+                    Text("\(style.quickMenuName) Quick Menu").tag(true)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 Text(quickMenu
-                     ? "These run while you hold L2. Buttons set to Nothing keep their Standard action."
+                     ? "These run while you hold \(style.quickMenuName). Buttons set to Nothing keep their Standard action."
                      : "Press runs when you tap a button. Hold runs when you hold it for half a second.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
                 ForEach(buttons) { b in
-                    ButtonRow(button: b, binding: bindingFor(b), showHold: !quickMenu)
+                    ButtonRow(button: b, style: style, binding: bindingFor(b), showHold: !quickMenu)
                 }
             } footer: {
                 HStack {
-                    Text("L2 opens the Quick Menu while held. While the keyboard is open: □ delete, △ space, L1/R1 move, L2 shift, R2 return, ○ close.")
+                    Text("\(style.quickMenuName) opens the Quick Menu while held. While the keyboard is open: □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Restore PS5 Layout") { settings.resetButtons() }
+                    Button("Restore \(style.title) Layout") { settings.resetButtons() }
                 }
             }
         }
@@ -265,21 +289,20 @@ struct ButtonsPane: View {
         let q = quickMenu
         return SwiftUI.Binding(
             get: { settings.binding(for: b, quickMenu: q) },
-            set: { nv in
-                if q { settings.data.quickMenu[b] = nv } else { settings.data.base[b] = nv }
-            })
+            set: { nv in settings.setBinding(nv, for: b, quickMenu: q) })
     }
 }
 
 struct ButtonRow: View {
     let button: PadButton
+    let style: ControllerStyle
     @SwiftUI.Binding var binding: ButtonBinding
     let showHold: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(button.name).frame(width: 170, alignment: .leading)
+                Text(button.name(for: style)).frame(width: 170, alignment: .leading)
                 ActionPicker(title: "Press", action: $binding.press)
                 if showHold {
                     ActionPicker(title: "Hold", action: $binding.hold)
@@ -417,10 +440,123 @@ struct DisplayPane: View {
                     Text("Large").tag(76.0)
                     Text("Extra Large").tag(90.0)
                 }
-                Text("The keyboard stays this size whatever the screen size is. Aim with the pointer and press ✕, or use □ delete, △ space, L1/R1 move, L2 shift, R2 return, ○ close.")
+                Text("The keyboard stays this size whatever the screen size is. Aim with the pointer and press ✕, or use □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+
+// MARK: - Profiles
+
+struct ProfilesPane: View {
+    @ObservedObject var settings: AppSettings
+    @State private var renaming: UUID?
+    @State private var newName = ""
+    @State private var message: String?
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(settings.data.profiles) { p in
+                    HStack(spacing: 12) {
+                        Image(systemName: p.style == .xbox ? "xbox.logo" : "playstation.logo")
+                            .font(.title3)
+                            .frame(width: 26)
+                            .foregroundStyle(p.id == settings.data.activeProfileID ? Color.accentColor : .secondary)
+                        if renaming == p.id {
+                            TextField("Name", text: $newName, onCommit: { commitRename(p.id) })
+                                .textFieldStyle(.roundedBorder)
+                            Button("Done") { commitRename(p.id) }
+                        } else {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(p.name)
+                                Text("\(p.style.title) layout").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if p.id == settings.data.activeProfileID {
+                                Text("In Use").font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 8).padding(.vertical, 3)
+                                    .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                            } else {
+                                Button("Use") { settings.data.activeProfileID = p.id }
+                            }
+                            Menu {
+                                Button("Rename…") { newName = p.name; renaming = p.id }
+                                Button("Export…") { export(p) }
+                                Picker("Controller Type", selection: styleBinding(p.id)) {
+                                    ForEach(ControllerStyle.allCases) { Text($0.title).tag($0) }
+                                }
+                                Divider()
+                                Button("Delete", role: .destructive) { settings.deleteProfile(p.id) }
+                                    .disabled(settings.data.profiles.count <= 1)
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .frame(width: 28)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            } header: {
+                Text("Button Profiles")
+            } footer: {
+                HStack {
+                    Button("Duplicate Current") { settings.duplicateActive() }
+                    Button("Import…") { importProfiles() }
+                    Spacer()
+                    if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+
+            Section {
+                Toggle("Switch profiles to match the controller", isOn: $settings.data.autoSwitchProfile)
+                Text("Connect an Xbox controller and the Xbox profile is used; connect a DualSense and the PlayStation profile is used.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func styleBinding(_ id: UUID) -> SwiftUI.Binding<ControllerStyle> {
+        SwiftUI.Binding(
+            get: { settings.data.profiles.first { $0.id == id }?.style ?? .playstation },
+            set: { v in
+                if let i = settings.data.profiles.firstIndex(where: { $0.id == id }) { settings.data.profiles[i].style = v }
+            })
+    }
+
+    private func commitRename(_ id: UUID) {
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, let i = settings.data.profiles.firstIndex(where: { $0.id == id }) {
+            settings.data.profiles[i].name = name
+        }
+        renaming = nil
+    }
+
+    private func importProfiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.json]
+        panel.message = "Choose one or more Console Mode profiles"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        let n = settings.importProfiles(from: panel.urls)
+        message = n == 0 ? "Those files aren't Console Mode profiles." : "Imported \(n) profile\(n == 1 ? "" : "s")."
+    }
+
+    private func export(_ p: Profile) {
+        guard let data = settings.exportData(for: p.id) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = p.name + ".json"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? data.write(to: url)
+        message = "Exported \(p.name)."
     }
 }

@@ -35,6 +35,29 @@ enum PadButton: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Name as printed on an Xbox controller
+    var xboxName: String {
+        switch self {
+        case .cross: return "Ⓐ A"
+        case .circle: return "Ⓑ B"
+        case .square: return "Ⓧ X"
+        case .triangle: return "Ⓨ Y"
+        case .l1: return "LB"
+        case .r1: return "RB"
+        case .l2: return "LT"
+        case .r2: return "RT"
+        case .options: return "Menu ☰"
+        case .create: return "View ⧉"
+        case .ps: return "Xbox Button"
+        case .l3: return "LS (left stick click)"
+        case .r3: return "RS (right stick click)"
+        case .touchpad: return "Share"
+        default: return name
+        }
+    }
+
+    func name(for style: ControllerStyle) -> String { style == .xbox ? xboxName : name }
+
     /// Short label for hints
     var glyph: String {
         switch self {
@@ -54,6 +77,49 @@ enum PadButton: String, Codable, CaseIterable, Identifiable {
 }
 
 extension PadButton: CodingKeyRepresentable {}
+
+enum ControllerStyle: String, Codable, CaseIterable, Identifiable {
+    case playstation, xbox
+    var id: String { rawValue }
+    var title: String { self == .xbox ? "Xbox" : "PlayStation" }
+    /// The button that opens the Quick Menu while held
+    var quickMenuName: String { self == .xbox ? "LT" : "L2" }
+}
+
+/// A full button layout that can be switched, shared and imported
+struct Profile: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    var style: ControllerStyle
+    var base: [PadButton: ButtonBinding]
+    var quickMenu: [PadButton: ButtonBinding]
+
+    init(id: UUID = UUID(), name: String, style: ControllerStyle,
+         base: [PadButton: ButtonBinding], quickMenu: [PadButton: ButtonBinding]) {
+        self.id = id; self.name = name; self.style = style; self.base = base; self.quickMenu = quickMenu
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        name = (try? c.decode(String.self, forKey: .name)) ?? "Imported Profile"
+        style = (try? c.decode(ControllerStyle.self, forKey: .style)) ?? .playstation
+        base = (try? c.decode([PadButton: ButtonBinding].self, forKey: .base)) ?? Defaults.base
+        quickMenu = (try? c.decode([PadButton: ButtonBinding].self, forKey: .quickMenu)) ?? Defaults.quickMenu
+    }
+}
+
+enum LightMode: String, Codable, CaseIterable, Identifiable {
+    case solid, party, battery
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .solid: return "Solid Color"
+        case .party: return "Party"
+        case .battery: return "Battery Level"
+        }
+    }
+}
 
 // MARK: - Actions
 
@@ -277,8 +343,10 @@ enum KeyNames {
 
 struct SettingsData: Codable {
     var enabled = true
-    var base: [PadButton: ButtonBinding] = Defaults.base
-    var quickMenu: [PadButton: ButtonBinding] = Defaults.quickMenu
+    var profiles: [Profile] = [Defaults.playstationProfile, Defaults.xboxProfile]
+    var activeProfileID: UUID = Defaults.playstationProfile.id
+    var autoSwitchProfile = true
+    var lightMode: LightMode = .solid
 
     var stickSpeed = 0.45          // 0…1
     var stickAcceleration = 0.6    // 0…1
@@ -295,13 +363,28 @@ struct SettingsData: Codable {
 
     init() {}
 
+    private enum LegacyKeys: String, CodingKey { case base, quickMenu }
+
     // Tolerant decoding so new settings never wipe old ones
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = SettingsData()
         enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? d.enabled
-        base = (try? c.decode([PadButton: ButtonBinding].self, forKey: .base)) ?? d.base
-        quickMenu = (try? c.decode([PadButton: ButtonBinding].self, forKey: .quickMenu)) ?? d.quickMenu
+        if let saved = try? c.decode([Profile].self, forKey: .profiles), !saved.isEmpty {
+            profiles = saved
+            activeProfileID = (try? c.decode(UUID.self, forKey: .activeProfileID)) ?? saved[0].id
+            if !profiles.contains(where: { $0.id == activeProfileID }) { activeProfileID = saved[0].id }
+        } else {
+            // Earlier versions kept one layout; turn it into the PlayStation profile
+            let legacy = try? decoder.container(keyedBy: LegacyKeys.self)
+            var ps = Defaults.playstationProfile
+            if let b = try? legacy?.decode([PadButton: ButtonBinding].self, forKey: .base) { ps.base = b }
+            if let q = try? legacy?.decode([PadButton: ButtonBinding].self, forKey: .quickMenu) { ps.quickMenu = q }
+            profiles = [ps, Defaults.xboxProfile]
+            activeProfileID = ps.id
+        }
+        autoSwitchProfile = (try? c.decode(Bool.self, forKey: .autoSwitchProfile)) ?? d.autoSwitchProfile
+        lightMode = (try? c.decode(LightMode.self, forKey: .lightMode)) ?? d.lightMode
         stickSpeed = (try? c.decode(Double.self, forKey: .stickSpeed)) ?? d.stickSpeed
         stickAcceleration = (try? c.decode(Double.self, forKey: .stickAcceleration)) ?? d.stickAcceleration
         scrollSpeed = (try? c.decode(Double.self, forKey: .scrollSpeed)) ?? d.scrollSpeed
@@ -318,6 +401,22 @@ struct SettingsData: Codable {
 }
 
 enum Defaults {
+    // Fixed IDs so the built-in profiles are recognisable
+    static let playstationProfile = Profile(id: UUID(uuidString: "5A1C0DE0-0000-4000-8000-000000000001")!,
+                                            name: "PlayStation", style: .playstation,
+                                            base: base, quickMenu: quickMenu)
+    static let xboxProfile = Profile(id: UUID(uuidString: "5A1C0DE0-0000-4000-8000-000000000002")!,
+                                     name: "Xbox", style: .xbox, base: xboxBase, quickMenu: quickMenu)
+
+    /// Xbox layout: A select, B back, X search, Y keyboard, Menu options, View screenshot, Xbox button home
+    static let xboxBase: [PadButton: ButtonBinding] = {
+        var m = base
+        m[.touchpad] = b(.screenshot)    // Share button on Series controllers
+        m[.create] = b(.missionControl)  // View
+        m[.ps] = b(.showDesktop, hold: .missionControl)
+        return m
+    }()
+
     static func b(_ k: ActionKind, hold: ActionKind = .none) -> ButtonBinding {
         ButtonBinding(press: Action(kind: k), hold: Action(kind: hold))
     }
@@ -396,13 +495,83 @@ final class AppSettings: ObservableObject {
         if let raw = try? enc.encode(data) { try? raw.write(to: Self.fileURL, options: .atomic) }
     }
 
+    var activeIndex: Int {
+        data.profiles.firstIndex { $0.id == data.activeProfileID } ?? 0
+    }
+
+    var activeProfile: Profile {
+        get { data.profiles[activeIndex] }
+        set { data.profiles[activeIndex] = newValue }
+    }
+
     func binding(for button: PadButton, quickMenu: Bool) -> ButtonBinding {
-        let table = quickMenu ? data.quickMenu : data.base
+        let p = activeProfile
+        let table = quickMenu ? p.quickMenu : p.base
         return table[button] ?? ButtonBinding(press: .none)
     }
 
+    func setBinding(_ b: ButtonBinding, for button: PadButton, quickMenu: Bool) {
+        let i = activeIndex
+        if quickMenu { data.profiles[i].quickMenu[button] = b } else { data.profiles[i].base[button] = b }
+    }
+
     func resetButtons() {
-        data.base = Defaults.base
-        data.quickMenu = Defaults.quickMenu
+        let i = activeIndex
+        let d = data.profiles[i].style == .xbox ? Defaults.xboxProfile : Defaults.playstationProfile
+        data.profiles[i].base = d.base
+        data.profiles[i].quickMenu = d.quickMenu
+    }
+
+    /// Switch to a profile made for this kind of controller, if the current one isn't
+    func autoSelect(for style: ControllerStyle) {
+        guard data.autoSwitchProfile, activeProfile.style != style,
+              let match = data.profiles.first(where: { $0.style == style }) else { return }
+        data.activeProfileID = match.id
+    }
+
+    func duplicateActive() {
+        var copy = activeProfile
+        copy.id = UUID()
+        copy.name = activeProfile.name + " Copy"
+        data.profiles.append(copy)
+        data.activeProfileID = copy.id
+    }
+
+    func deleteProfile(_ id: UUID) {
+        guard data.profiles.count > 1 else { return }
+        data.profiles.removeAll { $0.id == id }
+        if !data.profiles.contains(where: { $0.id == data.activeProfileID }) {
+            data.activeProfileID = data.profiles[0].id
+        }
+    }
+
+    /// Imports one or more .json profile files. Returns how many were added.
+    @discardableResult
+    func importProfiles(from urls: [URL]) -> Int {
+        var added = 0
+        for url in urls {
+            guard let raw = try? Data(contentsOf: url) else { continue }
+            var incoming: [Profile] = []
+            if let one = try? JSONDecoder().decode(Profile.self, from: raw), !one.base.isEmpty || !one.quickMenu.isEmpty {
+                incoming = [one]
+            } else if let many = try? JSONDecoder().decode([Profile].self, from: raw) {
+                incoming = many
+            }
+            for var p in incoming {
+                p.id = UUID()   // never clash with an existing profile
+                if p.name == "Imported Profile" { p.name = url.deletingPathExtension().lastPathComponent }
+                data.profiles.append(p)
+                added += 1
+            }
+        }
+        if added > 0, let last = data.profiles.last { data.activeProfileID = last.id }
+        return added
+    }
+
+    func exportData(for id: UUID) -> Data? {
+        guard let p = data.profiles.first(where: { $0.id == id }) else { return nil }
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? enc.encode(p)
     }
 }
