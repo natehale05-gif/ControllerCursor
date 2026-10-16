@@ -9,36 +9,42 @@ struct SettingsActions {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case general, controller, profiles, buttons, pointer, display
+    case general, controller, test, profiles, buttons, pointer, display, games
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: return "General"
         case .controller: return "Controller"
+        case .test: return "Test Controller"
         case .profiles: return "Profiles"
         case .buttons: return "Buttons"
         case .pointer: return "Pointer & Scrolling"
         case .display: return "Display & Keyboard"
+        case .games: return "Games"
         }
     }
     var icon: String {
         switch self {
         case .general: return "gearshape"
         case .controller: return "gamecontroller"
+        case .test: return "dot.radiowaves.left.and.right"
         case .profiles: return "person.2.crop.square.stack"
         case .buttons: return "circle.grid.cross"
         case .pointer: return "cursorarrow.motionlines"
         case .display: return "textformat.size"
+        case .games: return "flag.checkered"
         }
     }
     var tint: Color {
         switch self {
         case .general: return .gray
         case .controller: return .blue
+        case .test: return .green
         case .profiles: return .purple
         case .buttons: return .indigo
         case .pointer: return .orange
         case .display: return .teal
+        case .games: return .red
         }
     }
 }
@@ -46,8 +52,13 @@ enum Pane: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject var status: StatusModel
+    @ObservedObject var live: LiveInput
+    @ObservedObject var updater: Updater
     let actions: SettingsActions
     @State private var pane: Pane? = .general
+
+    /// Bigger text and controls while you're using the controller
+    private var large: Bool { status.controllerMode && settings.data.largeSettingsWithController }
 
     var body: some View {
         NavigationSplitView {
@@ -69,7 +80,9 @@ struct SettingsView: View {
         } detail: {
             Group {
                 switch pane ?? .general {
-                case .general: GeneralPane(settings: settings, status: status, actions: actions)
+                case .general: GeneralPane(settings: settings, status: status, updater: updater, actions: actions)
+                case .test: TestControllerPane(live: live, status: status, style: settings.activeProfile.style)
+                case .games: GamesPane(settings: settings, status: status)
                 case .controller: ControllerPane(settings: settings, status: status, actions: actions)
                 case .profiles: ProfilesPane(settings: settings)
                 case .buttons: ButtonsPane(settings: settings)
@@ -79,6 +92,8 @@ struct SettingsView: View {
             }
             .navigationTitle((pane ?? .general).title)
         }
+        .controlSize(large ? .large : .regular)
+        .font(large ? .title3 : .body)
         .frame(minWidth: 760, minHeight: 500)
     }
 }
@@ -88,6 +103,7 @@ struct SettingsView: View {
 struct GeneralPane: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var status: StatusModel
+    @ObservedObject var updater: Updater
     let actions: SettingsActions
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
 
@@ -103,6 +119,21 @@ struct GeneralPane: View {
                             openAtLogin = SMAppService.mainApp.status == .enabled
                         }
                     }
+            }
+
+            Section("Updates") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Console Mode \(updater.current)")
+                        if !updater.status.isEmpty {
+                            Text(updater.status).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if updater.busy { ProgressView().controlSize(.small) }
+                    Button("Check Now") { updater.check(install: true) }.disabled(updater.busy)
+                }
+                Toggle("Install updates automatically", isOn: $settings.data.autoUpdate)
             }
 
             Section("Permissions") {
@@ -225,6 +256,8 @@ struct ControllerPane: View {
 
             Section("Feedback") {
                 Toggle("Rumble when you click", isOn: $settings.data.rumble)
+                Toggle("Rumble ticks while scrolling", isOn: $settings.data.scrollTicks)
+                    .disabled(!settings.data.rumble)
                 Button("Test Rumble", action: actions.testRumble)
             }
         }
@@ -288,7 +321,7 @@ struct ButtonsPane: View {
     private func bindingFor(_ b: PadButton) -> SwiftUI.Binding<ButtonBinding> {
         let q = quickMenu
         return SwiftUI.Binding(
-            get: { settings.binding(for: b, quickMenu: q) },
+            get: { settings.editingBinding(for: b, quickMenu: q) },
             set: { nv in settings.setBinding(nv, for: b, quickMenu: q) })
     }
 }
@@ -430,17 +463,28 @@ struct DisplayPane: View {
                     Text("Extra Huge").tag(0.5)
                     Text("Largest Possible").tag(0.01)
                 }
-                Text("Everything gets bigger while you use the controller, and goes back to normal a few seconds after you use the mouse or trackpad. Takes effect the next time the controller takes over.")
+                Text("Everything gets bigger while you use the controller, and goes back to normal a few seconds after you use the mouse or trackpad.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Button Hints") {
+                Picker("On-screen hints", selection: $settings.data.hintsMode) {
+                    ForEach(HintsMode.allCases) { Text($0.title).tag($0) }
+                }
+                Text("Shows what ✕ ○ □ △ do along the bottom of the screen, like a console. Changes while you hold L2 or use the keyboard.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Settings Window") {
+                Toggle("Bigger text in Settings while using the controller", isOn: $settings.data.largeSettingsWithController)
+            }
             Section("On-Screen Keyboard") {
+                Toggle("Swipe typing with the touchpad", isOn: $settings.data.swipeTyping)
                 Picker("Key Size", selection: $settings.data.keyboardKeySize) {
                     Text("Small").tag(52.0)
                     Text("Medium").tag(64.0)
                     Text("Large").tag(76.0)
                     Text("Extra Large").tag(90.0)
                 }
-                Text("The keyboard stays this size whatever the screen size is. Move between keys with the D-pad and press ✕, or aim with the circle. □ delete, R3 space, L1/R1 move, L2 shift, R2 return, △ or ○ close.")
+                Text("The keyboard stays this size whatever the screen size is. Move between keys with the D-pad and press ✕, or aim with the circle. Swipe a finger across the touchpad to type whole words (R1 picks the next guess). □ delete, R3 space, L1/R1 move, L2 shift, R2 return, L3 voice, △ or ○ close. Hold △ anywhere to talk instead of typing.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -473,7 +517,9 @@ struct ProfilesPane: View {
                         } else {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(p.name)
-                                Text("\(p.style.title) layout").font(.caption).foregroundStyle(.secondary)
+                                Text(p.apps.isEmpty ? "\(p.style.title) layout"
+                                     : "\(p.style.title) layout · used in \(p.apps.map(appName).joined(separator: ", "))")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             if p.id == settings.data.activeProfileID {
@@ -486,6 +532,14 @@ struct ProfilesPane: View {
                             Menu {
                                 Button("Rename…") { newName = p.name; renaming = p.id }
                                 Button("Export…") { export(p) }
+                                Button("Use for an App…") { assignApp(p.id) }
+                                if !p.apps.isEmpty {
+                                    Menu("Stop Using for App") {
+                                        ForEach(p.apps, id: \.self) { id in
+                                            Button(appName(id)) { removeApp(id, from: p.id) }
+                                        }
+                                    }
+                                }
                                 Picker("Controller Type", selection: styleBinding(p.id)) {
                                     ForEach(ControllerStyle.allCases) { Text($0.title).tag($0) }
                                 }
@@ -519,6 +573,35 @@ struct ProfilesPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func appName(_ bundleID: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        }
+        return bundleID
+    }
+
+    private func assignApp(_ id: UUID) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose apps that should use this profile while they're in front"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        let ids = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }
+        for i in settings.data.profiles.indices {
+            settings.data.profiles[i].apps.removeAll { ids.contains($0) }   // one profile per app
+            if settings.data.profiles[i].id == id { settings.data.profiles[i].apps += ids }
+        }
+        message = ids.isEmpty ? nil : "Assigned \(ids.count) app\(ids.count == 1 ? "" : "s")."
+    }
+
+    private func removeApp(_ bundleID: String, from id: UUID) {
+        if let i = settings.data.profiles.firstIndex(where: { $0.id == id }) {
+            settings.data.profiles[i].apps.removeAll { $0 == bundleID }
+        }
     }
 
     private func styleBinding(_ id: UUID) -> SwiftUI.Binding<ControllerStyle> {
@@ -558,5 +641,169 @@ struct ProfilesPane: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? data.write(to: url)
         message = "Exported \(p.name)."
+    }
+}
+
+
+// MARK: - Games
+
+struct GamesPane: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var status: StatusModel
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Step aside while a game is open", isOn: $settings.data.pauseInGames)
+                Text("Games read the controller directly, the way Apple designed it. While one is in front, Console Mode stops remapping buttons, hides the circle and puts the screen back to normal size. The PS button opens Apple's game overlay.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let game = status.pausedForGame {
+                    Label("Paused right now for \(game)", systemImage: "pause.circle.fill").foregroundStyle(.green)
+                }
+            }
+            Section {
+                Text("Detected automatically: App Store games, Steam games, Apple Games, Steam, GeForce NOW, Epic, Battle.net, CrossOver, Whisky and common emulators.")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(settings.data.extraGames, id: \.self) { id in
+                    HStack {
+                        Text(name(id))
+                        Spacer()
+                        Button(role: .destructive) { settings.data.extraGames.removeAll { $0 == id } } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                Button("Add a Game…") { addGames() }
+            } header: {
+                Text("Games")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func name(_ id: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        }
+        return id
+    }
+
+    private func addGames() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.message = "Choose games that Console Mode should step aside for"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            if let id = Bundle(url: url)?.bundleIdentifier, !settings.data.extraGames.contains(id) {
+                settings.data.extraGames.append(id)
+            }
+        }
+    }
+}
+
+// MARK: - Test Controller
+
+struct TestControllerPane: View {
+    @ObservedObject var live: LiveInput
+    @ObservedObject var status: StatusModel
+    let style: ControllerStyle
+
+    var body: some View {
+        Form {
+            Section {
+                HStack {
+                    statusDot(status.connected)
+                    Text(status.connected ? status.controllerName : "No controller connected")
+                    Spacer()
+                    if let b = status.battery { Text("Battery \(Int(b * 100))%").foregroundStyle(.secondary) }
+                }
+                ControllerDiagram(live: live, style: style)
+                    .frame(height: 330)
+                Text("Press buttons, move the sticks and touch the touchpad. Anything that lights up here is reaching Console Mode.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+struct ControllerDiagram: View {
+    @ObservedObject var live: LiveInput
+    let style: ControllerStyle
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width, h = size.height
+            let cx = w / 2
+            let accent = Color.accentColor
+            func on(_ b: PadButton) -> Bool { live.pressed.contains(b) }
+            func circle(_ c: CGPoint, _ r: CGFloat, _ lit: Bool, _ label: String) {
+                let rect = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+                ctx.fill(Path(ellipseIn: rect), with: .color(lit ? accent : Color.secondary.opacity(0.18)))
+                ctx.stroke(Path(ellipseIn: rect), with: .color(.secondary.opacity(0.5)), lineWidth: 1)
+                ctx.draw(Text(label).font(.system(size: r * 0.9, weight: .bold)).foregroundColor(lit ? .white : .primary), at: c)
+            }
+            func pill(_ rect: CGRect, _ lit: Bool, _ label: String, fill: Double = 0) {
+                let path = Path(roundedRect: rect, cornerRadius: rect.height / 2)
+                ctx.fill(path, with: .color(Color.secondary.opacity(0.18)))
+                if fill > 0 {
+                    var c = ctx
+                    c.clip(to: path)
+                    c.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width * fill, height: rect.height)), with: .color(accent.opacity(0.6)))
+                }
+                if lit { ctx.fill(path, with: .color(accent)) }
+                ctx.stroke(path, with: .color(.secondary.opacity(0.5)), lineWidth: 1)
+                ctx.draw(Text(label).font(.system(size: 12, weight: .semibold)).foregroundColor(lit ? .white : .primary),
+                         at: CGPoint(x: rect.midX, y: rect.midY))
+            }
+            let xbox = style == .xbox
+            // Shoulders and triggers
+            pill(CGRect(x: cx - 250, y: 10, width: 110, height: 26), on(.l2), xbox ? "LT" : "L2", fill: Double(live.l2))
+            pill(CGRect(x: cx + 140, y: 10, width: 110, height: 26), on(.r2), xbox ? "RT" : "R2", fill: Double(live.r2))
+            pill(CGRect(x: cx - 250, y: 44, width: 110, height: 26), on(.l1), xbox ? "LB" : "L1")
+            pill(CGRect(x: cx + 140, y: 44, width: 110, height: 26), on(.r1), xbox ? "RB" : "R1")
+            // Touchpad
+            let tp = CGRect(x: cx - 95, y: 40, width: 190, height: 90)
+            let tpPath = Path(roundedRect: tp, cornerRadius: 12)
+            ctx.fill(tpPath, with: .color(on(.touchpad) ? accent.opacity(0.5) : Color.secondary.opacity(0.12)))
+            ctx.stroke(tpPath, with: .color(.secondary.opacity(0.5)), lineWidth: 1)
+            for t in live.touches {
+                let p = CGPoint(x: tp.midX + t.x * tp.width / 2, y: tp.midY - t.y * tp.height / 2)
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 7, y: p.y - 7, width: 14, height: 14)), with: .color(accent))
+            }
+            if !xbox { ctx.draw(Text("Touchpad").font(.caption).foregroundColor(.secondary), at: CGPoint(x: tp.midX, y: tp.maxY - 12)) }
+            // Small centre buttons
+            pill(CGRect(x: cx - 165, y: 92, width: 60, height: 22), on(.create), xbox ? "View" : "Create")
+            pill(CGRect(x: cx + 105, y: 92, width: 60, height: 22), on(.options), xbox ? "Menu" : "Options")
+            circle(CGPoint(x: cx, y: 160), 16, on(.ps), xbox ? "⊗" : "PS")
+            // D-pad
+            let dp = CGPoint(x: cx - 200, y: 170)
+            circle(CGPoint(x: dp.x, y: dp.y - 34), 17, on(.up), "↑")
+            circle(CGPoint(x: dp.x, y: dp.y + 34), 17, on(.down), "↓")
+            circle(CGPoint(x: dp.x - 34, y: dp.y), 17, on(.left), "←")
+            circle(CGPoint(x: dp.x + 34, y: dp.y), 17, on(.right), "→")
+            // Face buttons
+            let fb = CGPoint(x: cx + 200, y: 170)
+            circle(CGPoint(x: fb.x, y: fb.y - 34), 19, on(.triangle), xbox ? "Y" : "△")
+            circle(CGPoint(x: fb.x, y: fb.y + 34), 19, on(.cross), xbox ? "A" : "✕")
+            circle(CGPoint(x: fb.x - 34, y: fb.y), 19, on(.square), xbox ? "X" : "□")
+            circle(CGPoint(x: fb.x + 34, y: fb.y), 19, on(.circle), xbox ? "B" : "○")
+            // Sticks
+            for (c, v, b, name) in [(CGPoint(x: cx - 90, y: h - 70), live.left, PadButton.l3, xbox ? "LS" : "L3"),
+                                    (CGPoint(x: cx + 90, y: h - 70), live.right, PadButton.r3, xbox ? "RS" : "R3")] {
+                let r: CGFloat = 46
+                let base = CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
+                ctx.fill(Path(ellipseIn: base), with: .color(Color.secondary.opacity(on(b) ? 0.4 : 0.12)))
+                ctx.stroke(Path(ellipseIn: base), with: .color(.secondary.opacity(0.5)), lineWidth: 1)
+                let knob = CGPoint(x: c.x + v.x * (r - 16), y: c.y - v.y * (r - 16))
+                ctx.fill(Path(ellipseIn: CGRect(x: knob.x - 16, y: knob.y - 16, width: 32, height: 32)),
+                         with: .color(on(b) ? accent : Color.primary.opacity(0.7)))
+                ctx.draw(Text(name).font(.caption2).foregroundColor(.secondary), at: CGPoint(x: c.x, y: c.y + r + 10))
+            }
+        }
     }
 }

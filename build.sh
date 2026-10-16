@@ -7,12 +7,14 @@ rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 for arch in arm64 x86_64; do
   xcrun swiftc -O -swift-version 5 -target "$arch-apple-macos13.0" \
     -framework AppKit -framework SwiftUI -framework GameController -framework CoreHaptics \
-    -framework ServiceManagement -framework Combine \
+    -framework ServiceManagement -framework Combine -framework Speech -framework AVFoundation \
+    -framework ApplicationServices -framework UniformTypeIdentifiers \
     -o "build/ConsoleMode-$arch" ConsoleMode/*.swift
 done
 lipo -create build/ConsoleMode-arm64 build/ConsoleMode-x86_64 -output "$APP/Contents/MacOS/ConsoleMode"
 rm build/ConsoleMode-*
 cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Assets/words.txt "$APP/Contents/Resources/words.txt"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,11 +25,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.nate.consolemode</string>
   <key>CFBundleExecutable</key><string>ConsoleMode</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.0</string>
-  <key>CFBundleVersion</key><string>11</string>
+  <key>CFBundleShortVersionString</key><string>3.0</string>
+  <key>CFBundleVersion</key><string>12</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>NSMicrophoneUsageDescription</key><string>Console Mode listens while you hold the voice-typing button, so you can talk instead of typing.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Console Mode turns what you say into text with Apple's speech recognition.</string>
   <key>NSHumanReadableCopyright</key><string>Console Mode</string>
 </dict>
 </plist>

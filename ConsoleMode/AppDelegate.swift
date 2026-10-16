@@ -11,6 +11,8 @@ final class StatusModel: ObservableObject {
     @Published var charging = false
     @Published var hasAccessibility = false
     @Published var controllerKeysRunning = false
+    @Published var controllerMode = false
+    @Published var pausedForGame: String?
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
@@ -20,6 +22,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     private let out = Output.shared
     private let displayScaler = DisplayScaler()
     private let keyboard = ControllerKeyboard()
+    private let snap = SnapNavigator()
+    private let voice = VoiceTyping()
+    private let voiceCaption = VoiceCaption()
+    private let hints = HintsBar()
+    private let toast = Toast()
+    let updater = Updater()
+    private var lowBatteryWarned = false
 
     private var statusItem: NSStatusItem!
     private var ringPanel: NSPanel!
@@ -37,14 +46,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     // MARK: Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appliedScreenScale = settings.data.screenScale
+        appliedHintsMode = settings.data.hintsMode
         replaceControllerCursor()
         allowBackgroundCursorHiding()
-        keyboard.onStateChange = { [weak self] in self?.updateCursorVisibility() }
+        keyboard.onStateChange = { [weak self] in
+            self?.updateCursorVisibility()
+            self?.refreshHints()
+        }
         buildRing()
         buildMenuBar()
 
         controllers.delegate = self
         controllers.start()
+
+        voice.onUpdate = { [weak self] text in self?.voiceCaption.update(text) }
+        voice.onMessage = { [weak self] msg in self?.toast.show(msg, symbol: "mic.slash.fill", tint: .systemOrange, duration: 4) }
+
+        // Follow the app in front: per-app profiles, and stepping aside for games
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            self?.frontmostChanged()
+        }
+        frontmostChanged()
+
+        updater.startAutomaticChecks { [weak self] in self?.settings.data.autoUpdate ?? false }
 
         if !out.hasPermission { _ = CGRequestPostEventAccess() }
 
@@ -73,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         showArrow()
+        voice.stop()
         settings.saveNow()
         displayScaler.restore()
     }
@@ -82,8 +109,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         return true
     }
 
+    private var appliedScreenScale: Double?
+    private var appliedHintsMode: HintsMode?
+
+    /// Every setting takes effect right away
     private func settingsChanged() {
         let d = settings.data
+        // Screen size: switch now if the controller is in use
+        if appliedScreenScale != d.screenScale {
+            appliedScreenScale = d.screenScale
+            if controllerMode, !controllers.paused {
+                if displayScaler.restore() { lastDisplayChange = Date() }
+                if displayScaler.scaleUp(factor: d.screenScale) { lastDisplayChange = Date() }
+                keyboard.pointRatio = displayScaler.pointRatio
+                keyboard.refresh()
+            }
+        }
+        if appliedHintsMode != d.hintsMode {
+            appliedHintsMode = d.hintsMode
+            refreshHints()
+        }
+        controllers.applyGestureStates()
+        frontmostChanged()
         controllers.applyLight()
         ringView.diameter = d.circleSize
         let size = d.circleSize + 16
@@ -102,6 +149,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         status.charging = controllers.charging
         status.hasAccessibility = out.hasPermission
         status.controllerKeysRunning = !controllerKeysApps().isEmpty
+        // Low battery warning, once per discharge
+        if let b = status.battery {
+            if b < 0.15, !status.charging, !lowBatteryWarned {
+                lowBatteryWarned = true
+                toast.show("Controller battery low — \(Int(b * 100))%", symbol: "battery.25", tint: .systemRed, duration: 4)
+                controllers.rumble(0.9)
+            } else if b > 0.25 || status.charging {
+                lowBatteryWarned = false
+            }
+        }
+        rebuildMenu()
+    }
+
+    // MARK: Games and per-app profiles
+
+    private func frontmostChanged() {
+        let app = NSWorkspace.shared.frontmostApplication
+        // Ignore Console Mode's own windows (Settings)
+        if app?.processIdentifier == ProcessInfo.processInfo.processIdentifier { return }
+        settings.frontmostBundleID = app?.bundleIdentifier
+        controllers.applyGestureStates()
+        let game = settings.data.pauseInGames && GameDetector.isGame(app, extra: settings.data.extraGames)
+        setPaused(game ? (app?.localizedName ?? "Game") : nil)
+    }
+
+    /// While a game is in front, Console Mode steps aside: the game reads the controller itself
+    private func setPaused(_ gameName: String?) {
+        let paused = gameName != nil
+        guard paused != controllers.paused else { return }
+        controllers.paused = paused
+        status.pausedForGame = gameName
+        if paused {
+            keyboard.hide()
+            voice.stop()
+            hints.hide()
+            setControllerMode(false)
+            shrinkWork?.cancel()
+            if displayScaler.restore() { lastDisplayChange = Date(); keyboard.pointRatio = 1 }
+            toast.show("\(gameName!) — Console Mode paused", symbol: "gamecontroller.fill", tint: .systemGreen)
+        }
         rebuildMenu()
     }
 
@@ -113,6 +200,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     func controllerChanged() { refreshStatus() }
+
+    func controllerConnected(name: String) {
+        var text = "\(name) connected"
+        if let b = controllers.batteryLevel { text += " — \(Int(b * 100))%" }
+        toast.show(text, symbol: "gamecontroller.fill", tint: .systemBlue)
+    }
+
+    func navigate(_ dir: SnapNavigator.Direction) -> Bool {
+        guard out.hasPermission, !snap.focusedIsTextInput() else { return false }
+        return snap.jump(dir)
+    }
+
+    func voiceTyping(_ start: Bool) {
+        if start {
+            if voice.isListening { voice.stop() } else { voice.start() }
+        } else {
+            voice.stop()
+        }
+    }
+
+    func buttonsChanged(quickMenu: Bool) { refreshHints(quickMenu: quickMenu) }
+
+    func keyboardTouch(_ point: CGPoint?) -> Bool { keyboard.touch(point) }
+
+    // MARK: Button hints
+
+    private func refreshHints(quickMenu: Bool = false) {
+        let mode = settings.data.hintsMode
+        guard mode != .off, controllerMode, !controllers.paused else { hints.hide(); return }
+        let style = settings.effectiveProfile.style
+        func g(_ b: PadButton) -> (String, NSColor) {
+            if style == .xbox {
+                switch b {
+                case .cross: return ("A", .systemGreen)
+                case .circle: return ("B", .systemRed)
+                case .square: return ("X", .systemBlue)
+                case .triangle: return ("Y", .systemYellow)
+                case .options: return ("☰", .white)
+                case .l2: return ("LT", .white)
+                case .r2: return ("RT", .white)
+                case .r3: return ("RS", .white)
+                default: return (b.glyph, .white)
+                }
+            }
+            switch b {
+            case .cross: return ("✕", NSColor(calibratedRed: 0.5, green: 0.65, blue: 1, alpha: 1))
+            case .circle: return ("○", NSColor(calibratedRed: 1, green: 0.42, blue: 0.45, alpha: 1))
+            case .square: return ("□", NSColor(calibratedRed: 1, green: 0.55, blue: 0.85, alpha: 1))
+            case .triangle: return ("△", NSColor(calibratedRed: 0.3, green: 0.85, blue: 0.7, alpha: 1))
+            default: return (b.glyph, .white)
+            }
+        }
+        var items: [(glyph: String, color: NSColor, title: String)] = []
+        func add(_ b: PadButton, _ title: String) { let x = g(b); items.append((x.0, x.1, title)) }
+        if keyboard.isVisible {
+            add(.cross, "Type"); add(.square, "Delete"); add(.r3, "Space"); add(.l2, "Shift")
+            add(.r2, "Return"); add(.circle, "Close")
+        } else {
+            for b in [PadButton.cross, .circle, .square, .triangle, .options] {
+                let bind = settings.binding(for: b, quickMenu: quickMenu)
+                guard bind.press.kind != .none else { continue }
+                var title = bind.press.kind == .shortcut ? bind.press.title : bind.press.kind.shortTitle
+                if b == .triangle, bind.hold.kind == .voiceTyping { title += " (hold: Voice)" }
+                add(b, title)
+            }
+            if !quickMenu { add(.l2, "Quick Menu") }
+        }
+        hints.scale = displayScaler.pointRatio
+        hints.show(items, autoHideAfter: mode == .autoHide ? 4 : nil)
+    }
 
     /// The stick or touchpad moved the pointer: aim with the circle again instead of the D-pad highlight
     func pointerMovedByController() { keyboard.clearFocus() }
@@ -134,8 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             controllers.rumble(0.3)
             return true
         }
-        let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .r3, .options, .create,
-                                       .up, .down, .left, .right]
+        let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .r3, .l3, .options, .create,
+                                       .up, .down, .left, .right, .touchpad]
         guard handled.contains(button) else { return false }
         guard down else { return true }
         switch button {
@@ -147,7 +304,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         case .r3: keyboard.typeSpace()
         case .triangle, .circle, .options: keyboard.hide()
         case .l1: keyboard.cursorLeft()
-        case .r1: keyboard.cursorRight()
+        case .r1: if !keyboard.nextSuggestion() { keyboard.cursorRight() }
+        case .l3: voiceTyping(true)
+        case .touchpad: break   // the touchpad types (tap or swipe) while the keyboard is open
         case .r2: keyboard.returnKey()
         case .l2: keyboard.toggleShift()
         case .create: keyboard.toggleSymbols()
@@ -163,7 +322,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         let on = on && settings.data.enabled
         guard on != controllerMode else { return }
         controllerMode = on
+        status.controllerMode = on
         if on {
+            if settings.data.hintsMode == .always { DispatchQueue.main.async { [weak self] in self?.refreshHints() } }
             shrinkWork?.cancel()
             if displayScaler.scaleUp(factor: settings.data.screenScale) {
                 lastDisplayChange = Date()
@@ -179,6 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             followTimer?.invalidate()
             followTimer = nil
             ringPanel.orderOut(nil)
+            hints.hide()
             keyboard.clearFocus()   // using the mouse: bring the arrow back
             // Back to normal size once you've stuck with the mouse for a moment
             shrinkWork?.cancel()
@@ -328,6 +490,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         let info = NSMenuItem(title: line, action: nil, keyEquivalent: "")
         info.isEnabled = false
         menu.addItem(info)
+        if let game = status.pausedForGame {
+            let paused = NSMenuItem(title: "Paused while \(game) is open", action: nil, keyEquivalent: "")
+            paused.isEnabled = false
+            menu.addItem(paused)
+        }
         if !status.hasAccessibility {
             menu.addItem(item("⚠︎ Needs Accessibility Permission…", #selector(openAccessibility)))
         }
@@ -351,6 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         menu.addItem(profItem)
         menu.addItem(item("Show Keyboard", #selector(menuKeyboard)))
         menu.addItem(.separator())
+        menu.addItem(item("Check for Updates…", #selector(checkUpdates)))
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         menu.addItem(item("Quit Console Mode", #selector(quit), key: "q"))
         statusItem.menu = menu
@@ -368,6 +536,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         if let id = sender.representedObject as? UUID { settings.data.activeProfileID = id }
     }
     @objc private func menuKeyboard() { toggleKeyboard() }
+    @objc private func checkUpdates() {
+        updater.check(install: true)
+        openSettings()
+    }
 
     @objc func openAccessibility() {
         _ = CGRequestPostEventAccess()
@@ -378,7 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     @objc func openSettings() {
         if settingsWindow == nil {
-            let view = SettingsView(status: status, actions: SettingsActions(
+            let view = SettingsView(status: status, live: controllers.live, updater: updater, actions: SettingsActions(
                 openAccessibility: { [weak self] in self?.openAccessibility() },
                 quitControllerKeys: { [weak self] in self?.quitControllerKeys() },
                 testRumble: { [weak self] in self?.controllers.rumble(0.8) }

@@ -2,6 +2,8 @@ name: Build
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: macos-latest
@@ -24,3 +26,12 @@ jobs:
         with:
           name: Console-Mode
           path: build/Console-Mode.zip
+      - name: Publish release (used by the in-app updater)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "build/Console Mode.app/Contents/Info.plist")
+          if ! gh release view "v$VER" >/dev/null 2>&1; then
+            gh release create "v$VER" build/Console-Mode.zip --title "Console Mode $VER" --notes "Console Mode $VER"
+          fi

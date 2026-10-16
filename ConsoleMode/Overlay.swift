@@ -204,12 +204,14 @@ final class ControllerKeyboard {
         previewTimer = nil
         shift = false
         focusActive = false
+        lastSwipe = nil
         onStateChange?()
     }
 
     // MARK: Text preview above the keys
 
     private var previewLabel: NSTextField?
+    private var suggestionLabel: NSTextField?
     private var previewTimer: Timer?
     /// What's been typed with this keyboard, for apps that don't share their text
     private var typedBuffer = ""
@@ -394,8 +396,16 @@ final class ControllerKeyboard {
         label.frame = NSRect(x: previewHeight * 0.35, y: (previewHeight - lh) / 2,
                              width: barFrame.width - previewHeight * 0.7, height: lh)
         bar.addSubview(label)
+        let sugg = NSTextField(labelWithString: "")
+        sugg.font = NSFont.systemFont(ofSize: fontSize * 0.75, weight: .regular)
+        sugg.textColor = NSColor(white: 1, alpha: 0.5)
+        sugg.alignment = .right
+        sugg.frame = NSRect(x: barFrame.width * 0.55, y: (previewHeight - lh) / 2,
+                            width: barFrame.width * 0.45 - previewHeight * 0.35, height: lh)
+        bar.addSubview(sugg)
         content.addSubview(bar)
         previewLabel = label
+        suggestionLabel = sugg
 
         grid = []
         let keysTop = height - pad - previewHeight - pad * 0.6
@@ -436,7 +446,8 @@ final class ControllerKeyboard {
 
     // MARK: Typing into the app you're using
 
-    private func typeCharacter(_ s: String) {
+    private func typeCharacter(_ s: String, fromSwipe: Bool = false) {
+        if !fromSwipe { lastSwipe = nil; showSuggestions() }
         Output.shared.type(s)
         typedBuffer += s
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.updatePreview() }
@@ -446,7 +457,7 @@ final class ControllerKeyboard {
         }
     }
 
-    private func pressKey(_ code: CGKeyCode) {
+    private func pressKey(_ code: CGKeyCode, keepSwipe: Bool = false) {
         Output.shared.tap(KeyShortcut(keyCode: code))
         if code == 51, !typedBuffer.isEmpty { typedBuffer.removeLast() }
         if code == 36 { typedBuffer += "\n" }
@@ -456,9 +467,85 @@ final class ControllerKeyboard {
     // MARK: PS5-style controller shortcuts while the keyboard is open
 
     func typeSpace() { typeCharacter(" ") }
-    func backspace() { pressKey(51) }
-    func returnKey() { pressKey(36) }
-    func cursorLeft() { pressKey(123) }
+    func backspace() {
+        // Right after a swipe, delete the whole word
+        if let swipe = lastSwipe {
+            for _ in 0..<(swipe.words[swipe.index].count + 1) { pressKey(51) }
+            lastSwipe = nil
+            showSuggestions()
+            return
+        }
+        pressKey(51)
+    }
+
+    // MARK: Swipe typing with the touchpad
+
+    private var swipePath: [Character] = []
+    private var touchedKey: KeyView?
+    private var lastSwipe: (words: [String], index: Int, capitalized: Bool)?
+
+    /// Touchpad position (-1…1 both ways) while the keyboard is open; nil when the finger lifts
+    func touch(_ point: CGPoint?) -> Bool {
+        guard isVisible else { return false }
+        guard let point else { finishSwipe(); return true }
+        let letterRows = grid.indices.filter { $0 >= 1 && $0 <= 3 }
+        let letterKeys = letterRows.flatMap { grid[$0] }
+        guard let area = letterKeys.map(\.frame).reduce(nil, { (acc: CGRect?, r) in acc?.union(r) ?? r }) else { return false }
+        let px = area.minX + (point.x + 1) / 2 * area.width
+        let py = area.minY + (point.y + 1) / 2 * area.height
+        let p = CGPoint(x: px, y: py)
+        let key = letterKeys.first { $0.frame.contains(p) }
+            ?? letterKeys.min { hypot($0.frame.midX - px, $0.frame.midY - py) < hypot($1.frame.midX - px, $1.frame.midY - py) }
+        guard let key else { return true }
+        if let r = grid.firstIndex(where: { $0.contains { $0 === key } }), let c = grid[r].firstIndex(where: { $0 === key }) {
+            let wasActive = focusActive
+            focusRow = r; focusCol = c; focusActive = true
+            applyFocus()
+            if !wasActive { onStateChange?() }
+        }
+        touchedKey = key
+        if key.label.count == 1, let ch = key.label.lowercased().first, ch.isLetter, swipePath.last != ch {
+            swipePath.append(ch)
+        }
+        return true
+    }
+
+    private func finishSwipe() {
+        defer { swipePath = []; touchedKey = nil }
+        // A tap (or a swipe that stayed on one key): press that key
+        guard Set(swipePath).count >= 2 else {
+            touchedKey?.activate()
+            return
+        }
+        let words = SwipeDecoder.shared.decode(swipePath)
+        guard !words.isEmpty else { return }
+        let cap = shift && !symbols
+        lastSwipe = (words, 0, cap)
+        typeCharacter(display(words[0], cap) + " ", fromSwipe: true)
+        showSuggestions()
+    }
+
+    private func display(_ w: String, _ cap: Bool) -> String { cap ? w.prefix(1).uppercased() + w.dropFirst() : w }
+
+    /// Right after a swipe, R1 swaps in the next guess
+    func nextSuggestion() -> Bool {
+        guard var swipe = lastSwipe, swipe.words.count > 1 else { return false }
+        for _ in 0..<(swipe.words[swipe.index].count + 1) { pressKey(51) }
+        swipe.index = (swipe.index + 1) % swipe.words.count
+        lastSwipe = swipe
+        typeCharacter(display(swipe.words[swipe.index], swipe.capitalized) + " ", fromSwipe: true)
+        showSuggestions()
+        return true
+    }
+
+    private func showSuggestions() {
+        guard let label = suggestionLabel else { return }
+        guard let swipe = lastSwipe, swipe.words.count > 1 else { label.stringValue = ""; return }
+        let others = swipe.words.enumerated().filter { $0.offset != swipe.index }.map { $0.element }
+        label.stringValue = "R1: " + others.joined(separator: " · ")
+    }
+    func returnKey() { lastSwipe = nil; showSuggestions(); pressKey(36) }
+    func cursorLeft() { lastSwipe = nil; showSuggestions(); pressKey(123) }
     func cursorRight() { pressKey(124) }
     func toggleShift() { if !symbols { shift.toggle(); layout() } }
     func toggleSymbols() { symbols.toggle(); shift = false; layout() }

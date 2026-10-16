@@ -11,6 +11,24 @@ protocol ControllerDelegate: AnyObject {
     func keyboardButton(_ button: PadButton, down: Bool) -> Bool
     func controllerChanged()
     func pointerMovedByController()
+    /// D-pad "jump" actions: move to the next button/link. Return false to fall back to arrow keys.
+    func navigate(_ dir: SnapNavigator.Direction) -> Bool
+    func voiceTyping(_ start: Bool)
+    /// For the on-screen hints
+    func buttonsChanged(quickMenu: Bool)
+    /// Swipe typing: the touchpad position while the keyboard is open (nil when lifted). Return true if used.
+    func keyboardTouch(_ point: CGPoint?) -> Bool
+    func controllerConnected(name: String)
+}
+
+/// Live controller state for the Test Controller page
+final class LiveInput: ObservableObject {
+    @Published var pressed: Set<PadButton> = []
+    @Published var left = CGPoint.zero
+    @Published var right = CGPoint.zero
+    @Published var l2: Float = 0
+    @Published var r2: Float = 0
+    @Published var touches: [CGPoint] = []
 }
 
 /// Reads the DualSense directly and turns it into Mac input.
@@ -20,6 +38,18 @@ final class ControllerManager {
     private let out = Output.shared
 
     private(set) var controller: GCController?
+    let live = LiveInput()
+    private var liveCounter = 0
+    /// While a game is in front, Console Mode steps aside completely
+    var paused = false {
+        didSet {
+            guard paused != oldValue else { return }
+            if paused { releaseAll() }
+            applyGestureStates()
+        }
+    }
+    private var scrollAccum: CGFloat = 0
+    private var lastTick2 = Date.distantPast
     private var timer: Timer?
     private var lastTick = Date()
     private var hapticEngine: CHHapticEngine?
@@ -70,19 +100,33 @@ final class ControllerManager {
 
     private func attach(_ c: GCController?) {
         guard let c, c.extendedGamepad != nil else { delegate?.controllerChanged(); return }
+        let isNew = controller !== c
         controller = c
-        // Keep macOS from grabbing the PS and Create buttons for its own shortcuts
-        if let pad = c.extendedGamepad {
-            pad.buttonHome?.preferredSystemGestureState = .disabled
-            pad.buttonOptions?.preferredSystemGestureState = .disabled
-        }
         settings.autoSelect(for: style)
+        applyGestureStates()
         applyLight()
         if let engine = c.haptics?.createEngine(withLocality: .default) {
             engine.isAutoShutdownEnabled = true
             hapticEngine = engine
         }
         delegate?.controllerChanged()
+        if isNew {
+            rumble(0.7)
+            delegate?.controllerConnected(name: c.vendorName ?? "Controller")
+        }
+    }
+
+    /// PS / Create (Xbox / View): let macOS handle them when set to "Apple Default" or while a game
+    /// is in front; otherwise keep macOS from also reacting to them.
+    func applyGestureStates() {
+        guard let pad = controller?.extendedGamepad else { return }
+        func state(_ b: PadButton) -> GCControllerElement.SystemGestureState {
+            if paused { return .enabled }
+            let binding = settings.binding(for: b, quickMenu: false)
+            return binding.press.kind == .appleDefault ? .enabled : .disabled
+        }
+        pad.buttonHome?.preferredSystemGestureState = state(.ps)
+        pad.buttonOptions?.preferredSystemGestureState = state(.create)
     }
 
     /// PlayStation or Xbox, from the kind of controller connected
@@ -163,7 +207,8 @@ final class ControllerManager {
         let now = Date()
         let dt = min(now.timeIntervalSince(lastTick), 0.05)
         lastTick = now
-        guard settings.data.enabled, let pad = controller?.extendedGamepad else {
+        if let pad = controller?.extendedGamepad { publishLive(pad) }
+        guard settings.data.enabled, !paused, let pad = controller?.extendedGamepad else {
             if !down.isEmpty { releaseAll() }
             touchLast = nil
             return
@@ -172,6 +217,23 @@ final class ControllerManager {
         readButtons(pad, now: now)
         moveWithSticks(pad, dt: dt)
         readTouchpad(pad, now: now)
+    }
+
+    private func publishLive(_ pad: GCExtendedGamepad) {
+        liveCounter += 1
+        guard liveCounter % 3 == 0 else { return }
+        var pressed = Set<PadButton>()
+        for b in PadButton.allCases where isDown(b, pad) { pressed.insert(b) }
+        if live.pressed != pressed { live.pressed = pressed }
+        live.left = CGPoint(x: CGFloat(pad.leftThumbstick.xAxis.value), y: CGFloat(pad.leftThumbstick.yAxis.value))
+        live.right = CGPoint(x: CGFloat(pad.rightThumbstick.xAxis.value), y: CGFloat(pad.rightThumbstick.yAxis.value))
+        live.l2 = pad.leftTrigger.value
+        live.r2 = pad.rightTrigger.value
+        if let (a, b) = touchpadPads(pad) {
+            live.touches = [a, b].compactMap { t in
+                t.xAxis.value == 0 && t.yAxis.value == 0 ? nil : CGPoint(x: CGFloat(t.xAxis.value), y: CGFloat(t.yAxis.value))
+            }
+        }
     }
 
     private func isDown(_ b: PadButton, _ pad: GCExtendedGamepad) -> Bool {
@@ -228,6 +290,7 @@ final class ControllerManager {
     private func buttonDown(_ b: PadButton, now: Date) {
         if b == .touchpad { touchClicked = true }
         delegate?.controllerActivity()
+        defer { delegate?.buttonsChanged(quickMenu: quickMenuHeld) }
         var p = Press(start: now, binding: b == .l2 ? ButtonBinding(press: .none) : bindingFor(b))
         if delegate?.keyboardVisible == true, delegate?.keyboardButton(b, down: true) == true {
             p.handledByKeyboard = true
@@ -254,9 +317,10 @@ final class ControllerManager {
             return
         }
         if !p.pressFired, !p.holdFired, p.binding.hold.kind != .none, now.timeIntervalSince(p.start) >= holdTime {
-            perform(p.binding.hold, phase: .tap)
             p.holdFired = true
             rumble(0.8)
+            if p.binding.hold.kind == .voiceTyping { delegate?.voiceTyping(true) }
+            else { perform(p.binding.hold, phase: .tap) }
         }
         if p.pressFired, let next = p.nextRepeat, now >= next {
             perform(p.binding.press, phase: .tap)
@@ -265,6 +329,9 @@ final class ControllerManager {
     }
 
     private func buttonUp(_ b: PadButton, _ p: Press) {
+        if b == .l2 { delegate?.buttonsChanged(quickMenu: false) }
+        // Voice typing runs for as long as the button is held
+        if p.holdFired, p.binding.hold.kind == .voiceTyping { delegate?.voiceTyping(false) }
         if p.handledByKeyboard {
             _ = delegate?.keyboardButton(b, down: false)
             return
@@ -289,8 +356,20 @@ final class ControllerManager {
     func perform(_ action: Action, phase: Phase) {
         let isStart = phase == .down || phase == .tap
         switch action.kind {
-        case .none:
+        case .none, .appleDefault:
             return
+        case .voiceTyping:
+            // As a press action: tap to start, tap again to stop
+            if phase == .down || phase == .tap { delegate?.voiceTyping(true) }
+        case .jumpUp, .jumpDown, .jumpLeft, .jumpRight:
+            guard isStart else { return }
+            let dir: SnapNavigator.Direction = action.kind == .jumpUp ? .up : action.kind == .jumpDown ? .down
+                : action.kind == .jumpLeft ? .left : .right
+            if delegate?.navigate(dir) != true {
+                // Nothing to jump to (or typing in a text box): behave like the arrow keys
+                let arrow: ActionKind = dir == .up ? .arrowUp : dir == .down ? .arrowDown : dir == .left ? .arrowLeft : .arrowRight
+                if let s = arrow.shortcut { out.tap(s) }
+            }
         case .leftClick:
             if phase == .down || phase == .tap { out.leftButton(down: true); rumble(0.4) }
             if phase == .up || phase == .tap { out.leftButton(down: false) }
@@ -370,6 +449,14 @@ final class ControllerManager {
             let speed = CGFloat(150 + d.scrollSpeed * 2350) * CGFloat(dt)
             let sign: CGFloat = d.invertScroll ? -1 : 1
             out.scroll(dx: -vx * speed * sign, dy: vy * speed * sign)
+            if d.scrollTicks {
+                scrollAccum += hypot(vx, vy) * speed
+                if scrollAccum > 160, Date().timeIntervalSince(lastTick2) > 0.07 {
+                    scrollAccum = 0
+                    lastTick2 = Date()
+                    rumble(0.18)
+                }
+            }
         }
     }
 
@@ -396,6 +483,17 @@ final class ControllerManager {
         guard let (primary, _) = touchpadPads(pad) else { return }
         let x = CGFloat(primary.xAxis.value), y = CGFloat(primary.yAxis.value)
         let touching = x != 0 || y != 0
+        // Keyboard open: the touchpad becomes the keyboard (tap a key, or swipe across letters)
+        if delegate?.keyboardVisible == true, settings.data.swipeTyping {
+            if touching {
+                if delegate?.keyboardTouch(CGPoint(x: x, y: y)) == true { touchLast = CGPoint(x: x, y: y); touchClicked = true; return }
+            } else if touchLast != nil, touchClicked {
+                _ = delegate?.keyboardTouch(nil)
+                touchLast = nil
+                touchClicked = false
+                return
+            }
+        }
         if touching {
             if let last = touchLast {
                 let scale = CGFloat(500 + settings.data.touchpadSpeed * 1500)

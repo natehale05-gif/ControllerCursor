@@ -58,6 +58,20 @@ final class Output {
         lastPointerPost = Date()
     }
 
+    /// Puts the pointer exactly on a spot (used to jump to buttons and links)
+    func movePointer(to point: CGPoint) {
+        let target = clamp(point)
+        let type: CGEventType = leftDown ? .leftMouseDragged : .mouseMoved
+        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: target,
+                              mouseButton: .left) else { return }
+        let current = Self.pointerLocation()
+        e.setIntegerValueField(.mouseEventDeltaX, value: Int64(target.x - current.x))
+        e.setIntegerValueField(.mouseEventDeltaY, value: Int64(target.y - current.y))
+        e.post(tap: .cghidEventTap)
+        remainder = .zero
+        lastPointerPost = Date()
+    }
+
     // MARK: Clicks
 
     func leftButton(down: Bool) {

@@ -93,10 +93,13 @@ struct Profile: Codable, Identifiable, Hashable {
     var style: ControllerStyle
     var base: [PadButton: ButtonBinding]
     var quickMenu: [PadButton: ButtonBinding]
+    /// Apps (bundle IDs) that automatically use this profile while they're in front
+    var apps: [String] = []
 
     init(id: UUID = UUID(), name: String, style: ControllerStyle,
-         base: [PadButton: ButtonBinding], quickMenu: [PadButton: ButtonBinding]) {
+         base: [PadButton: ButtonBinding], quickMenu: [PadButton: ButtonBinding], apps: [String] = []) {
         self.id = id; self.name = name; self.style = style; self.base = base; self.quickMenu = quickMenu
+        self.apps = apps
     }
 
     init(from decoder: Decoder) throws {
@@ -106,6 +109,19 @@ struct Profile: Codable, Identifiable, Hashable {
         style = (try? c.decode(ControllerStyle.self, forKey: .style)) ?? .playstation
         base = (try? c.decode([PadButton: ButtonBinding].self, forKey: .base)) ?? Defaults.base
         quickMenu = (try? c.decode([PadButton: ButtonBinding].self, forKey: .quickMenu)) ?? Defaults.quickMenu
+        apps = (try? c.decode([String].self, forKey: .apps)) ?? []
+    }
+}
+
+enum HintsMode: String, Codable, CaseIterable, Identifiable {
+    case autoHide, always, off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .autoHide: return "Show when buttons are pressed"
+        case .always: return "Always show"
+        case .off: return "Off"
+        }
     }
 }
 
@@ -159,6 +175,10 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     case screenshot, captureMenu
     // Media
     case playPause, nextTrack, previousTrack, volumeUp, volumeDown, mute, brightnessUp, brightnessDown
+    // Navigation & typing
+    case jumpUp, jumpDown, jumpLeft, jumpRight, voiceTyping
+    // Leave it to macOS (PS / Create buttons)
+    case appleDefault
     // Custom
     case shortcut
 
@@ -220,14 +240,20 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .mute: return "Mute"
         case .brightnessUp: return "Brightness Up"
         case .brightnessDown: return "Brightness Down"
+        case .jumpUp: return "Jump Up (to buttons & links)"
+        case .jumpDown: return "Jump Down (to buttons & links)"
+        case .jumpLeft: return "Jump Left (to buttons & links)"
+        case .jumpRight: return "Jump Right (to buttons & links)"
+        case .voiceTyping: return "Voice Typing (hold to talk)"
+        case .appleDefault: return "Apple Default"
         case .shortcut: return "Custom Shortcut…"
         }
     }
 
     /// Groups for the action picker
     static let groups: [(String, [ActionKind])] = [
-        ("Pointer", [.leftClick, .rightClick, .middleClick]),
-        ("Console", [.keyboard, .spotlight, .missionControl, .appWindows, .showDesktop, .appSwitcher,
+        ("Pointer", [.leftClick, .rightClick, .middleClick, .jumpUp, .jumpDown, .jumpLeft, .jumpRight]),
+        ("Console", [.keyboard, .voiceTyping, .appleDefault, .spotlight, .missionControl, .appWindows, .showDesktop, .appSwitcher,
                      .lastApp, .launchpad, .finder]),
         ("Keys", [.escape, .enter, .delete, .tab, .space, .arrowUp, .arrowDown, .arrowLeft, .arrowRight,
                   .pageUp, .pageDown]),
@@ -290,7 +316,25 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     /// Held keys that should repeat like a real keyboard
     var repeats: Bool {
         [.delete, .arrowUp, .arrowDown, .arrowLeft, .arrowRight, .pageUp, .pageDown,
-         .volumeUp, .volumeDown, .brightnessUp, .brightnessDown, .zoomIn, .zoomOut].contains(self)
+         .volumeUp, .volumeDown, .brightnessUp, .brightnessDown, .zoomIn, .zoomOut,
+         .jumpUp, .jumpDown, .jumpLeft, .jumpRight].contains(self)
+    }
+
+    /// One or two words for the on-screen button hints
+    var shortTitle: String {
+        switch self {
+        case .leftClick: return "Select"
+        case .rightClick: return "Options"
+        case .escape: return "Back"
+        case .spotlight: return "Search"
+        case .keyboard: return "Keyboard"
+        case .missionControl: return "Windows"
+        case .appleDefault: return "Home"
+        case .jumpUp, .jumpDown, .jumpLeft, .jumpRight: return "Move"
+        case .voiceTyping: return "Voice"
+        default:
+            return title.components(separatedBy: " (").first ?? title
+        }
     }
 }
 
@@ -359,6 +403,15 @@ struct SettingsData: Codable {
     var keyboardKeySize = 64.0
 
     var rumble = true
+    var scrollTicks = true
+
+    var pauseInGames = true
+    var extraGames: [String] = []
+    var hintsMode: HintsMode = .autoHide
+    var swipeTyping = true
+    var largeSettingsWithController = true
+    var autoUpdate = true
+    var layoutVersion = 2
     var lightRed = 0.0, lightGreen = 0.35, lightBlue = 1.0
 
     init() {}
@@ -397,6 +450,15 @@ struct SettingsData: Codable {
         lightRed = (try? c.decode(Double.self, forKey: .lightRed)) ?? d.lightRed
         lightGreen = (try? c.decode(Double.self, forKey: .lightGreen)) ?? d.lightGreen
         lightBlue = (try? c.decode(Double.self, forKey: .lightBlue)) ?? d.lightBlue
+        scrollTicks = (try? c.decode(Bool.self, forKey: .scrollTicks)) ?? d.scrollTicks
+        pauseInGames = (try? c.decode(Bool.self, forKey: .pauseInGames)) ?? d.pauseInGames
+        extraGames = (try? c.decode([String].self, forKey: .extraGames)) ?? d.extraGames
+        hintsMode = (try? c.decode(HintsMode.self, forKey: .hintsMode)) ?? d.hintsMode
+        swipeTyping = (try? c.decode(Bool.self, forKey: .swipeTyping)) ?? d.swipeTyping
+        largeSettingsWithController = (try? c.decode(Bool.self, forKey: .largeSettingsWithController)) ?? d.largeSettingsWithController
+        autoUpdate = (try? c.decode(Bool.self, forKey: .autoUpdate)) ?? d.autoUpdate
+        layoutVersion = (try? c.decode(Int.self, forKey: .layoutVersion)) ?? 1
+        if layoutVersion < 2 { Defaults.upgradeToV2(&profiles); layoutVersion = 2 }
     }
 }
 
@@ -411,11 +473,31 @@ enum Defaults {
     /// Xbox layout: A select, B back, X search, Y keyboard, Menu options, View screenshot, Xbox button home
     static let xboxBase: [PadButton: ButtonBinding] = {
         var m = base
-        m[.touchpad] = b(.screenshot)    // Share button on Series controllers
+        m[.touchpad] = b(.appleDefault)  // Share button on Series controllers
         m[.create] = b(.missionControl)  // View
-        m[.ps] = b(.showDesktop, hold: .missionControl)
+        m[.ps] = b(.appleDefault)        // Xbox button
         return m
     }()
+
+    /// Earlier versions used arrow keys on the D-pad and custom PS/Create actions. Move built-in
+    /// profiles to the new defaults, but only where the user never changed the button.
+    static func upgradeToV2(_ profiles: inout [Profile]) {
+        let old: [PadButton: ButtonBinding] = [
+            .up: b(.arrowUp), .down: b(.arrowDown), .left: b(.arrowLeft), .right: b(.arrowRight),
+            .create: b(.screenshot, hold: .captureMenu), .ps: b(.missionControl, hold: .showDesktop),
+            .triangle: b(.keyboard),
+        ]
+        let oldXbox: [PadButton: ButtonBinding] = [
+            .touchpad: b(.screenshot), .ps: b(.showDesktop, hold: .missionControl),
+        ]
+        for i in profiles.indices {
+            let fresh = profiles[i].style == .xbox ? xboxBase : base
+            for (button, oldBinding) in old.merging(profiles[i].style == .xbox ? oldXbox : [:], uniquingKeysWith: { $1 })
+            where profiles[i].base[button] == oldBinding {
+                profiles[i].base[button] = fresh[button]
+            }
+        }
+    }
 
     static func b(_ k: ActionKind, hold: ActionKind = .none) -> ButtonBinding {
         ButtonBinding(press: Action(kind: k), hold: Action(kind: hold))
@@ -426,15 +508,15 @@ enum Defaults {
         .cross: b(.leftClick),
         .circle: b(.escape, hold: .closeWindow),
         .square: b(.spotlight),
-        .triangle: b(.keyboard),
+        .triangle: b(.keyboard, hold: .voiceTyping),
         .l1: b(.previousTab),
         .r1: b(.nextTab),
         .l2: b(.none),                      // holds the Quick Menu
         .r2: b(.enter),
-        .up: b(.arrowUp), .down: b(.arrowDown), .left: b(.arrowLeft), .right: b(.arrowRight),
+        .up: b(.jumpUp), .down: b(.jumpDown), .left: b(.jumpLeft), .right: b(.jumpRight),
         .options: b(.rightClick),
-        .create: b(.screenshot, hold: .captureMenu),
-        .ps: b(.missionControl, hold: .showDesktop),
+        .create: b(.appleDefault),          // macOS takes the screenshot / clip
+        .ps: b(.appleDefault),              // macOS game overlay / Apps
         .l3: b(.finder),
         .r3: b(.delete),
         .touchpad: b(.leftClick),
@@ -499,12 +581,29 @@ final class AppSettings: ObservableObject {
         data.profiles.firstIndex { $0.id == data.activeProfileID } ?? 0
     }
 
+    /// The app in front (kept up to date by the app delegate) — not saved
+    var frontmostBundleID: String?
+
+    /// The profile in use right now: one assigned to the front app, otherwise the active one
+    var effectiveProfile: Profile {
+        if let id = frontmostBundleID, let p = data.profiles.first(where: { $0.apps.contains(id) }) { return p }
+        return activeProfile
+    }
+
     var activeProfile: Profile {
         get { data.profiles[activeIndex] }
         set { data.profiles[activeIndex] = newValue }
     }
 
+    /// What the button does right now (respects per-app profiles)
     func binding(for button: PadButton, quickMenu: Bool) -> ButtonBinding {
+        let p = effectiveProfile
+        let table = quickMenu ? p.quickMenu : p.base
+        return table[button] ?? ButtonBinding(press: .none)
+    }
+
+    /// The button as set in the profile being edited in Settings
+    func editingBinding(for button: PadButton, quickMenu: Bool) -> ButtonBinding {
         let p = activeProfile
         let table = quickMenu ? p.quickMenu : p.base
         return table[button] ?? ButtonBinding(press: .none)
