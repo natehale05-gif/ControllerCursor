@@ -183,14 +183,19 @@ final class ControllerKeyboard {
 
     func toggle() { isVisible ? hide() : show() }
 
+    /// Called whenever the keyboard opens, closes, or switches between D-pad and aiming
+    var onStateChange: (() -> Void)?
+
     func show() {
         typedBuffer = ""
+        focusActive = true          // start with a key highlighted so the D-pad works right away
         layout()
         panel?.orderFrontRegardless()
         updatePreview()
         let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in self?.updatePreview() }
         RunLoop.main.add(t, forMode: .common)
         previewTimer = t
+        onStateChange?()
     }
 
     func hide() {
@@ -199,6 +204,7 @@ final class ControllerKeyboard {
         previewTimer = nil
         shift = false
         focusActive = false
+        onStateChange?()
     }
 
     // MARK: Text preview above the keys
@@ -310,6 +316,7 @@ final class ControllerKeyboard {
             focusActive = true
             clampFocus()
             applyFocus()
+            onStateChange?()
             return
         }
         let current = grid[focusRow][focusCol].frame.midX
@@ -337,6 +344,7 @@ final class ControllerKeyboard {
         guard focusActive else { return }
         focusActive = false
         applyFocus()
+        onStateChange?()
     }
 
     private func clampFocus() {

@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         replaceControllerCursor()
+        allowBackgroundCursorHiding()
+        keyboard.onStateChange = { [weak self] in self?.updateCursorVisibility() }
         buildRing()
         buildMenuBar()
 
@@ -70,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        showArrow()
         settings.saveNow()
         displayScaler.restore()
     }
@@ -168,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             }
             lastPointer = Output.pointerLocation()
             followPointer()
-            ringPanel.orderFrontRegardless()
+            if !(keyboard.isVisible && keyboard.focusActive) { ringPanel.orderFrontRegardless() }
             let t = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in self?.tick() }
             RunLoop.main.add(t, forMode: .common)
             followTimer = t
@@ -176,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             followTimer?.invalidate()
             followTimer = nil
             ringPanel.orderOut(nil)
+            keyboard.clearFocus()   // using the mouse: bring the arrow back
             // Back to normal size once you've stuck with the mouse for a moment
             shrinkWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
@@ -202,6 +206,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
            !controllers.sticksDeflected {
             setControllerMode(false)   // the mouse or trackpad moved it
         }
+    }
+
+    // MARK: Hiding the cursor while typing
+
+    private var arrowHidden = false
+
+    /// While you type with the D-pad, neither the circle nor the arrow is shown
+    private func updateCursorVisibility() {
+        let typing = keyboard.isVisible && keyboard.focusActive
+        if typing {
+            ringPanel.orderOut(nil)
+            if !arrowHidden {
+                CGDisplayHideCursor(CGMainDisplayID())
+                arrowHidden = true
+            }
+        } else {
+            showArrow()
+            if controllerMode { followPointer(); ringPanel.orderFrontRegardless() }
+        }
+    }
+
+    private func showArrow() {
+        guard arrowHidden else { return }
+        CGDisplayShowCursor(CGMainDisplayID())
+        arrowHidden = false
+    }
+
+    /// Lets this background app hide the arrow (macOS normally only allows the frontmost app)
+    private func allowBackgroundCursorHiding() {
+        typealias DefaultConnFn = @convention(c) () -> Int32
+        typealias SetPropFn = @convention(c) (Int32, Int32, CFString, CFTypeRef) -> Int32
+        let handle = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
+        guard let a = dlsym(handle, "_CGSDefaultConnection"),
+              let b = dlsym(handle, "CGSSetConnectionProperty") else { return }
+        let conn = unsafeBitCast(a, to: DefaultConnFn.self)()
+        _ = unsafeBitCast(b, to: SetPropFn.self)(conn, conn, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
     }
 
     // MARK: Circle
@@ -360,6 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     @objc private func quit() {
+        showArrow()
         displayScaler.restore()
         NSApp.terminate(nil)
     }
