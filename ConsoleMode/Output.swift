@@ -98,11 +98,18 @@ final class Output {
 
     // MARK: Scrolling
 
+    private var scrollRemainder = CGPoint.zero
+
     func scroll(dx: CGFloat, dy: CGFloat) {
-        guard dx != 0 || dy != 0,
+        scrollRemainder.x += dx
+        scrollRemainder.y += dy
+        let ix = scrollRemainder.x.rounded(.towardZero), iy = scrollRemainder.y.rounded(.towardZero)
+        guard ix != 0 || iy != 0,
               let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
-                              wheel1: Int32(dy.rounded()), wheel2: Int32(dx.rounded()), wheel3: 0)
+                              wheel1: Int32(iy), wheel2: Int32(ix), wheel3: 0)
         else { return }
+        scrollRemainder.x -= ix
+        scrollRemainder.y -= iy
         e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         e.post(tap: .cghidEventTap)
     }
@@ -111,7 +118,14 @@ final class Output {
 
     func key(_ s: KeyShortcut, down: Bool) {
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: s.keyCode, keyDown: down) else { return }
-        e.flags = s.flags
+        // Real arrow and F-keys carry the fn flag; system shortcuts like Mission Control need it to match
+        var f = s.flags
+        switch s.keyCode {
+        case 123...126: f.formUnion([.maskSecondaryFn, .maskNumericPad])
+        case 96...122: f.insert(.maskSecondaryFn)
+        default: break
+        }
+        e.flags = f
         e.post(tap: .cghidEventTap)
     }
 

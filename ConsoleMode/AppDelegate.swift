@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         if !out.hasPermission { _ = CGRequestPostEventAccess() }
 
         // React to settings changes
-        settings.$data.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
+        settings.$data.dropFirst().debounce(for: .milliseconds(50), scheduler: RunLoop.main).sink { [weak self] _ in
             self?.settingsChanged()
         }.store(in: &cancellables)
 
@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        settings.saveNow()
         displayScaler.restore()
     }
 

@@ -33,12 +33,13 @@ final class ControllerManager {
         var handledByKeyboard = false
     }
     private var down: [PadButton: Press] = [:]
-    private var quickMenuHeld: Bool { down[.l2] != nil }
+    private var quickMenuHeld: Bool { down[.l2].map { !$0.handledByKeyboard } ?? false }
 
     // Touchpad state
     private var touchLast: CGPoint?
     private var touchStart = Date()
     private var touchTravel: CGFloat = 0
+    private var touchClicked = false
 
     private let holdTime: TimeInterval = 0.5
 
@@ -89,15 +90,16 @@ final class ControllerManager {
 
     func rumble(_ intensity: Float = 0.6) {
         guard settings.data.rumble, let engine = hapticEngine else { return }
-        do {
-            try engine.start()
-            let event = CHHapticEvent(eventType: .hapticTransient, parameters: [
-                CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
-                CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.6),
-            ], relativeTime: 0)
-            let player = try engine.makePlayer(with: try CHHapticPattern(events: [event], parameters: []))
-            try player.start(atTime: CHHapticTimeImmediate)
-        } catch {}
+        let event = CHHapticEvent(eventType: .hapticTransient, parameters: [
+            CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
+            CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.6),
+        ], relativeTime: 0)
+        guard let pattern = try? CHHapticPattern(events: [event], parameters: []) else { return }
+        // Start asynchronously so waking the haptics never stalls the pointer
+        engine.start { [weak engine] error in
+            guard error == nil, let engine else { return }
+            try? engine.makePlayer(with: pattern).start(atTime: CHHapticTimeImmediate)
+        }
     }
 
     // MARK: Main loop
@@ -106,7 +108,11 @@ final class ControllerManager {
         let now = Date()
         let dt = min(now.timeIntervalSince(lastTick), 0.05)
         lastTick = now
-        guard settings.data.enabled, let pad = controller?.extendedGamepad else { return }
+        guard settings.data.enabled, let pad = controller?.extendedGamepad else {
+            if !down.isEmpty { releaseAll() }
+            touchLast = nil
+            return
+        }
 
         readButtons(pad, now: now)
         moveWithSticks(pad, dt: dt)
@@ -121,8 +127,9 @@ final class ControllerManager {
         case .triangle: return pad.buttonY.isPressed
         case .l1: return pad.leftShoulder.isPressed
         case .r1: return pad.rightShoulder.isPressed
-        case .l2: return pad.leftTrigger.value > 0.4
-        case .r2: return pad.rightTrigger.value > 0.4
+        // Separate press/release thresholds so a half-pulled trigger can't flicker
+        case .l2: return pad.leftTrigger.value > (down[.l2] == nil ? 0.45 : 0.25)
+        case .r2: return pad.rightTrigger.value > (down[.r2] == nil ? 0.45 : 0.25)
         case .up: return pad.dpad.up.isPressed
         case .down: return pad.dpad.down.isPressed
         case .left: return pad.dpad.left.isPressed
@@ -164,6 +171,7 @@ final class ControllerManager {
     }
 
     private func buttonDown(_ b: PadButton, now: Date) {
+        if b == .touchpad { touchClicked = true }
         delegate?.controllerActivity()
         var p = Press(start: now, binding: b == .l2 ? ButtonBinding(press: .none) : bindingFor(b))
         if delegate?.keyboardVisible == true, delegate?.keyboardButton(b, down: true) == true {
@@ -207,6 +215,7 @@ final class ControllerManager {
     private func releaseAll() {
         for (_, p) in down where p.pressFired && !p.handledByKeyboard { perform(p.binding.press, phase: .up) }
         down.removeAll()
+        touchLast = nil
     }
 
     // MARK: Performing actions
@@ -237,13 +246,21 @@ final class ControllerManager {
             }
         case .finder:
             if isStart { out.openApp(bundleID: "com.apple.finder") }
-        case .appSwitcher, .lastApp:
+        case .lastApp:
             if isStart {
-                let cmd = KeyShortcut(keyCode: 55, command: true)
-                out.key(cmd, down: true)
+                out.key(KeyShortcut(keyCode: 55, command: true), down: true)
                 out.tap(KeyShortcut(keyCode: 48, command: true))
-                out.key(KeyShortcut(keyCode: 55), down: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [out] in
+                    out.key(KeyShortcut(keyCode: 55), down: false)
+                }
             }
+        case .appSwitcher:
+            // Hold the button to keep the app switcher open; let go to pick
+            if phase == .down || phase == .tap {
+                out.key(KeyShortcut(keyCode: 55, command: true), down: true)
+                out.tap(KeyShortcut(keyCode: 48, command: true))
+            }
+            if phase == .up || phase == .tap { out.key(KeyShortcut(keyCode: 55), down: false) }
         case .playPause: if isStart { out.media(.play) }
         case .nextTrack: if isStart { out.media(.next) }
         case .previousTrack: if isStart { out.media(.previous) }
@@ -331,9 +348,10 @@ final class ControllerManager {
             touchLast = CGPoint(x: x, y: y)
         } else if touchLast != nil {
             // Quick light tap = click
-            if now.timeIntervalSince(touchStart) < 0.18, touchTravel < 0.06, down[.touchpad] == nil {
+            if !touchClicked, now.timeIntervalSince(touchStart) < 0.18, touchTravel < 0.06, down[.touchpad] == nil {
                 perform(Action(kind: .leftClick), phase: .tap)
             }
+            touchClicked = false
             touchLast = nil
         }
     }

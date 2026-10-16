@@ -366,9 +366,8 @@ enum Defaults {
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
 
-    @Published var data: SettingsData {
-        didSet { save() }
-    }
+    @Published var data: SettingsData
+    private var saveSub: AnyCancellable?
 
     private static var fileURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -384,7 +383,12 @@ final class AppSettings: ObservableObject {
         } else {
             data = SettingsData()
         }
+        // Save shortly after changes settle (sliders change many times a second)
+        saveSub = $data.dropFirst().debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.save() }
     }
+
+    func saveNow() { save() }
 
     private func save() {
         let enc = JSONEncoder()
