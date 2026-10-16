@@ -176,6 +176,13 @@ final class DisplayScaler {
         return true
     }
 
+    /// Points shrink when the screen is scaled up; multiply sizes by this to keep them physically the same
+    var pointRatio: CGFloat {
+        guard isScaled, let originalMode, let current = CGDisplayCopyDisplayMode(display),
+              originalMode.width > 0 else { return 1 }
+        return CGFloat(current.width) / CGFloat(originalMode.width)
+    }
+
     @discardableResult
     func restore() -> Bool {
         guard isScaled, let originalMode else { return false }
@@ -188,6 +195,217 @@ final class DisplayScaler {
         guard CGBeginDisplayConfiguration(&config) == .success, let config else { return false }
         CGConfigureDisplayWithDisplayMode(config, display, mode, nil)
         return CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
+    }
+}
+
+// MARK: - Controller keyboard (stays the same physical size at every screen size)
+
+/// One key. Clicked with the controller's circle + ✕ (a normal left click).
+final class KeyView: NSView {
+    let label: String
+    var isActive = false { didSet { needsDisplay = true } }
+    private let action: () -> Void
+    private var hovering = false { didSet { needsDisplay = true } }
+    private var pressed = false { didSet { needsDisplay = true } }
+
+    init(label: String, isActive: Bool = false, action: @escaping () -> Void) {
+        self.label = label
+        self.isActive = isActive
+        self.action = action
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false; pressed = false }
+    override func mouseDown(with event: NSEvent) { pressed = true }
+    override func mouseUp(with event: NSEvent) {
+        let wasPressed = pressed
+        pressed = false
+        if wasPressed { action() }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: bounds.height * 0.05, dy: bounds.height * 0.05)
+        let path = NSBezierPath(roundedRect: rect, xRadius: rect.height * 0.22, yRadius: rect.height * 0.22)
+        let blue = NSColor(calibratedRed: 0.0, green: 0.44, blue: 0.95, alpha: 1)
+        let fill: NSColor = pressed ? .white : hovering ? blue : isActive ? NSColor(white: 0.42, alpha: 1)
+                                                                          : NSColor(white: 0.20, alpha: 1)
+        fill.setFill()
+        path.fill()
+        if hovering && !pressed {
+            NSColor.white.setStroke()
+            path.lineWidth = max(2, rect.height * 0.04)
+            path.stroke()
+        }
+        let fontSize = rect.height * (label.count > 3 ? 0.26 : label.count > 1 ? 0.32 : 0.44)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: pressed ? NSColor.black : NSColor.white,
+        ]
+        let str = NSAttributedString(string: label, attributes: attrs)
+        let size = str.size()
+        str.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+    }
+}
+
+final class ControllerKeyboard {
+    private var panel: NSPanel?
+    private var shift = false
+    private var symbols = false
+    /// Key size in points at the normal screen size
+    var keySize: CGFloat = 64
+    /// Multiplier that keeps the physical size constant when the screen is scaled up
+    var pointRatio: CGFloat = 1
+
+    var isVisible: Bool { panel?.isVisible ?? false }
+
+    private let numberRow = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+    private let letterRows = [["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+                              ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+                              ["z", "x", "c", "v", "b", "n", "m"]]
+    private let symbolRows = [["!", "@", "#", "$", "%", "^", "&", "*", "(", ")"],
+                              ["-", "_", "=", "+", "/", "\\", ":", ";", "'", "\""],
+                              ["<", ">", "[", "]", "{", "}", "~"]]
+
+    func toggle() { isVisible ? hide() : show() }
+
+    func show() {
+        if !CGPreflightPostEventAccess() { _ = CGRequestPostEventAccess() }
+        layout()
+        panel?.orderFrontRegardless()
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+        shift = false
+    }
+
+    /// Re-lay out at the current screen size (call after the display scale changes)
+    func refresh() { if isVisible { layout() } }
+
+    // MARK: Layout
+
+    private struct Key { let label: String; let width: CGFloat; let active: Bool; let action: () -> Void }
+
+    private func rows() -> [[Key]] {
+        func ch(_ s: String) -> Key {
+            let shown = (shift && !symbols) ? s.uppercased() : s
+            return Key(label: shown, width: 1, active: false) { [weak self] in self?.typeCharacter(shown) }
+        }
+        func special(_ label: String, _ w: CGFloat, active: Bool = false, _ a: @escaping () -> Void) -> Key {
+            Key(label: label, width: w, active: active, action: a)
+        }
+        let body = symbols ? symbolRows : letterRows
+        var r: [[Key]] = []
+        r.append(numberRow.map(ch) + [special("⌫", 1.5) { [weak self] in self?.pressKey(51) }])
+        r.append(body[0].map(ch))
+        r.append(body[1].map(ch) + [special("return", 1.75) { [weak self] in self?.pressKey(36) }])
+        var row3: [Key] = []
+        if symbols {
+            row3.append(special("tab", 1.5) { [weak self] in self?.pressKey(48) })
+        } else {
+            row3.append(special("⇧", 1.5, active: shift) { [weak self] in
+                guard let self else { return }
+                self.shift.toggle(); self.layout()
+            })
+        }
+        row3 += body[2].map(ch) + [ch(","), ch("."), ch("?")]
+        r.append(row3)
+        r.append([
+            special(symbols ? "ABC" : "#+=", 1.5, active: symbols) { [weak self] in
+                guard let self else { return }
+                self.symbols.toggle(); self.shift = false; self.layout()
+            },
+            special("@", 1) { [weak self] in self?.typeCharacter("@") },
+            special("space", 5) { [weak self] in self?.typeCharacter(" ") },
+            special("←", 1) { [weak self] in self?.pressKey(123) },
+            special("→", 1) { [weak self] in self?.pressKey(124) },
+            special("done", 1.5) { [weak self] in self?.hide() },
+        ])
+        return r
+    }
+
+    private func layout() {
+        guard let screen = NSScreen.screens.first else { return }
+        let u = keySize * pointRatio
+        let pad = u * 0.3
+        let allRows = rows()
+        let rowWidths = allRows.map { $0.reduce(0) { $0 + $1.width } * u }
+        let width = (rowWidths.max() ?? 0) + pad * 2
+        let height = CGFloat(allRows.count) * u + pad * 2
+
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+        let content = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        content.material = .hudWindow
+        content.blendingMode = .behindWindow
+        content.state = .active
+        content.wantsLayer = true
+        content.layer?.cornerRadius = u * 0.35
+        content.layer?.masksToBounds = true
+
+        for (i, row) in allRows.enumerated() {
+            var x = (width - rowWidths[i]) / 2
+            let y = height - pad - CGFloat(i + 1) * u
+            for key in row {
+                let v = KeyView(label: key.label, isActive: key.active, action: key.action)
+                v.frame = NSRect(x: x, y: y, width: key.width * u, height: u)
+                content.addSubview(v)
+                x += key.width * u
+            }
+        }
+        panel.contentView = content
+        let vf = screen.visibleFrame
+        panel.setFrame(NSRect(x: vf.midX - width / 2, y: vf.minY + u * 0.4, width: width, height: height),
+                       display: true)
+    }
+
+    private func makePanel() -> NSPanel {
+        let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.hidesOnDeactivate = false
+        p.becomesKeyOnlyIfNeeded = true
+        p.level = .statusBar
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        return p
+    }
+
+    // MARK: Typing into the app you're using
+
+    private func typeCharacter(_ s: String) {
+        var chars = Array(s.utf16)
+        let src = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: down)
+            e?.flags = []
+            e?.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
+            e?.post(tap: .cghidEventTap)
+        }
+        if shift && !symbols {
+            shift = false
+            layout()
+        }
+    }
+
+    private func pressKey(_ code: CGKeyCode) {
+        let src = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: down)
+            e?.flags = []
+            e?.post(tap: .cghidEventTap)
+        }
     }
 }
 
@@ -218,6 +436,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastDisplayChange = Date.distantPast
     private var shrinkWork: DispatchWorkItem?
     private var keyboardForcedNormal = false
+    private let keyboard = ControllerKeyboard()
+    /// F19: what △ sends in the Console Mode profile to open this keyboard
+    private let keyboardHotKey: Int64 = 80
+    private var keyboardKeySize: Double {
+        get { defaults.object(forKey: "keyboardKeySize") as? Double ?? 64 }
+        set { defaults.set(newValue, forKey: "keyboardKeySize") }
+    }
     private var keyboardWatchTimer: Timer?
     private var cursorSwapped = false
     private var signalSources: [DispatchSourceSignal] = []
@@ -279,6 +504,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         buildPanel()
         buildMenu()
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.keyboard.pointRatio = self.displayScaler.pointRatio
+            self.keyboard.refresh()
+        }
         let kbTimer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.watchKeyboard() }
         RunLoop.main.add(kbTimer, forMode: .common)
         keyboardWatchTimer = kbTimer
@@ -543,6 +774,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return
         }
+        if type == .keyDown {
+            if event.getIntegerValueField(.keyboardEventKeycode) == keyboardHotKey,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                toggleKeyboard()
+            }
+            return
+        }
 
         let pid = pid_t(event.getIntegerValueField(.eventSourceUnixProcessID))
         let fromControllerKeys = pid != 0 && pid != getpid() && isControllerKeys(pid)
@@ -585,7 +823,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startEventTap() {
         let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown,
                                     .rightMouseUp, .leftMouseDragged, .rightMouseDragged,
-                                    .otherMouseDown, .otherMouseUp, .otherMouseDragged, .scrollWheel]
+                                    .otherMouseDown, .otherMouseUp, .otherMouseDragged, .scrollWheel,
+                                    .keyDown]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
@@ -712,6 +951,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screenItem.submenu = screenMenu
         menu.addItem(screenItem)
 
+        let kbMenu = NSMenu()
+        for (label, value) in [("Small", 52.0), ("Medium", 64.0), ("Large", 76.0), ("Extra Large", 90.0)] {
+            let item = NSMenuItem(title: label, action: #selector(pickKeyboardSize(_:)), keyEquivalent: "")
+            item.representedObject = value
+            item.state = keyboardKeySize == value ? .on : .off
+            item.target = self
+            kbMenu.addItem(item)
+        }
+        let kbItem = NSMenuItem(title: "Keyboard Size", action: nil, keyEquivalent: "")
+        kbItem.submenu = kbMenu
+        menu.addItem(kbItem)
+        let showKb = NSMenuItem(title: "Show Keyboard (△)", action: #selector(menuToggleKeyboard), keyEquivalent: "")
+        showKb.target = self
+        menu.addItem(showKb)
+
         menu.addItem(.separator())
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -744,6 +998,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleHideArrow() {
         hideArrow.toggle()
         if controllerMode { hideArrow ? hideSystemArrow() : restoreArrow() }
+        rebuildMenu()
+    }
+
+    private func toggleKeyboard() {
+        keyboard.keySize = CGFloat(keyboardKeySize)
+        keyboard.pointRatio = displayScaler.pointRatio
+        keyboard.toggle()
+    }
+
+    @objc private func menuToggleKeyboard() { toggleKeyboard() }
+
+    @objc private func pickKeyboardSize(_ sender: NSMenuItem) {
+        guard let v = sender.representedObject as? Double else { return }
+        keyboardKeySize = v
+        keyboard.keySize = CGFloat(v)
+        keyboard.refresh()
         rebuildMenu()
     }
 
