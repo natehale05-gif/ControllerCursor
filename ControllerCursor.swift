@@ -191,9 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { }
     }
     /// true = the system cursor itself becomes the circle; false = circle drawn around the arrow
+    /// Swapping the system cursor image proved unreliable (apps redraw their own cursors),
+    /// so the circle is always drawn around the arrow.
     private var swapCursor: Bool {
-        get { defaults.object(forKey: "swapCursor") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "swapCursor") }
+        get { false }
+        set { }
     }
     private var ringSize: Double {
         get { defaults.object(forKey: "ringSize") as? Double ?? 44 }
@@ -564,16 +566,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         on.state = enabled ? .on : .off
         menu.addItem(on)
 
-        let styleMenu = NSMenu()
-        let swap = NSMenuItem(title: "Circle Replaces Arrow", action: #selector(pickSwap), keyEquivalent: "")
-        swap.state = swapCursor ? .on : .off
-        swap.isEnabled = CircleCursor.isSupported
-        let around = NSMenuItem(title: "Circle Around Arrow", action: #selector(pickAround), keyEquivalent: "")
-        around.state = swapCursor ? .off : .on
-        [swap, around].forEach { $0.target = self; styleMenu.addItem($0) }
-        let styleItem = NSMenuItem(title: "Cursor Style", action: nil, keyEquivalent: "")
-        styleItem.submenu = styleMenu
-        menu.addItem(styleItem)
 
         let sizeMenu = NSMenu()
         for (label, value) in [("Small", 32.0), ("Medium", 44.0), ("Large", 56.0), ("Extra Large", 72.0)] {
