@@ -230,9 +230,12 @@ final class ControllerManager {
         live.l2 = pad.leftTrigger.value
         live.r2 = pad.rightTrigger.value
         if let (a, b) = touchpadPads(pad) {
-            live.touches = [a, b].compactMap { t in
-                t.xAxis.value == 0 && t.yAxis.value == 0 ? nil : CGPoint(x: CGFloat(t.xAxis.value), y: CGFloat(t.yAxis.value))
+            var points: [CGPoint] = []
+            for t in [a, b] {
+                let x = CGFloat(t.xAxis.value), y = CGFloat(t.yAxis.value)
+                if x != 0 || y != 0 { points.append(CGPoint(x: x, y: y)) }
             }
+            live.touches = points
         }
     }
 
