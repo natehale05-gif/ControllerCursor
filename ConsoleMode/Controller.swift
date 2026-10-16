@@ -392,6 +392,9 @@ final class ControllerManager {
             }
         case .finder:
             if isStart { out.openApp(bundleID: "com.apple.finder") }
+        case .siri:
+            // Opening Siri starts listening, just like holding the Siri key
+            if isStart { out.openApp(bundleID: "com.apple.Siri") }
         case .lastApp:
             if isStart {
                 out.key(KeyShortcut(keyCode: 55, command: true), down: true)

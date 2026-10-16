@@ -176,7 +176,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     // Media
     case playPause, nextTrack, previousTrack, volumeUp, volumeDown, mute, brightnessUp, brightnessDown
     // Navigation & typing
-    case jumpUp, jumpDown, jumpLeft, jumpRight, voiceTyping
+    case jumpUp, jumpDown, jumpLeft, jumpRight, voiceTyping, siri
     // Leave it to macOS (PS / Create buttons)
     case appleDefault
     // Custom
@@ -245,6 +245,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .jumpLeft: return "Jump Left (to buttons & links)"
         case .jumpRight: return "Jump Right (to buttons & links)"
         case .voiceTyping: return "Voice Typing (hold to talk)"
+        case .siri: return "Ask Siri"
         case .appleDefault: return "Apple Default"
         case .shortcut: return "Custom Shortcut…"
         }
@@ -253,7 +254,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     /// Groups for the action picker
     static let groups: [(String, [ActionKind])] = [
         ("Pointer", [.leftClick, .rightClick, .middleClick, .jumpUp, .jumpDown, .jumpLeft, .jumpRight]),
-        ("Console", [.keyboard, .voiceTyping, .appleDefault, .spotlight, .missionControl, .appWindows, .showDesktop, .appSwitcher,
+        ("Console", [.keyboard, .voiceTyping, .siri, .appleDefault, .spotlight, .missionControl, .appWindows, .showDesktop, .appSwitcher,
                      .lastApp, .launchpad, .finder]),
         ("Keys", [.escape, .enter, .delete, .tab, .space, .arrowUp, .arrowDown, .arrowLeft, .arrowRight,
                   .pageUp, .pageDown]),
@@ -332,6 +333,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .appleDefault: return "Home"
         case .jumpUp, .jumpDown, .jumpLeft, .jumpRight: return "Move"
         case .voiceTyping: return "Voice"
+        case .siri: return "Siri"
         default:
             return title.components(separatedBy: " (").first ?? title
         }
@@ -486,6 +488,7 @@ enum Defaults {
             .up: b(.arrowUp), .down: b(.arrowDown), .left: b(.arrowLeft), .right: b(.arrowRight),
             .create: b(.screenshot, hold: .captureMenu), .ps: b(.missionControl, hold: .showDesktop),
             .triangle: b(.keyboard),
+            .options: b(.rightClick),
         ]
         let oldXbox: [PadButton: ButtonBinding] = [
             .touchpad: b(.screenshot), .ps: b(.showDesktop, hold: .missionControl),
@@ -514,7 +517,7 @@ enum Defaults {
         .l2: b(.none),                      // holds the Quick Menu
         .r2: b(.enter),
         .up: b(.jumpUp), .down: b(.jumpDown), .left: b(.jumpLeft), .right: b(.jumpRight),
-        .options: b(.rightClick),
+        .options: b(.rightClick, hold: .siri),
         .create: b(.appleDefault),          // macOS takes the screenshot / clip
         .ps: b(.appleDefault),              // macOS game overlay / Apps
         .l3: b(.finder),

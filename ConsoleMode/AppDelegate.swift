@@ -262,7 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
                 let bind = settings.binding(for: b, quickMenu: quickMenu)
                 guard bind.press.kind != .none else { continue }
                 var title = bind.press.kind == .shortcut ? bind.press.title : bind.press.kind.shortTitle
-                if b == .triangle, bind.hold.kind == .voiceTyping { title += " (hold: Voice)" }
+                if bind.hold.kind == .voiceTyping || bind.hold.kind == .siri {
+                    title += " (hold: \(bind.hold.kind.shortTitle))"
+                }
                 add(b, title)
             }
             if !quickMenu { add(.l2, "Quick Menu") }

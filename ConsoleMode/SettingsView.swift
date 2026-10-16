@@ -484,7 +484,7 @@ struct DisplayPane: View {
                     Text("Large").tag(76.0)
                     Text("Extra Large").tag(90.0)
                 }
-                Text("The keyboard stays this size whatever the screen size is. Move between keys with the D-pad and press ✕, or aim with the circle. Swipe a finger across the touchpad to type whole words (R1 picks the next guess). □ delete, R3 space, L1/R1 move, L2 shift, R2 return, L3 voice, △ or ○ close. Hold △ anywhere to talk instead of typing.")
+                Text("The keyboard stays this size whatever the screen size is. Move between keys with the D-pad and press ✕, or aim with the circle. Swipe a finger across the touchpad to type whole words (R1 picks the next guess). □ delete, R3 space, L1/R1 move, L2 shift, R2 return, L3 voice, △ or ○ close. Hold △ anywhere to talk instead of typing, and hold Options for Siri.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
