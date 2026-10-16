@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 // MARK: - Circle drawn around the pointer
 
@@ -183,14 +184,63 @@ final class ControllerKeyboard {
     func toggle() { isVisible ? hide() : show() }
 
     func show() {
+        typedBuffer = ""
         layout()
         panel?.orderFrontRegardless()
+        updatePreview()
+        let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in self?.updatePreview() }
+        RunLoop.main.add(t, forMode: .common)
+        previewTimer = t
     }
 
     func hide() {
         panel?.orderOut(nil)
+        previewTimer?.invalidate()
+        previewTimer = nil
         shift = false
         focusActive = false
+    }
+
+    // MARK: Text preview above the keys
+
+    private var previewLabel: NSTextField?
+    private var previewTimer: Timer?
+    /// What's been typed with this keyboard, for apps that don't share their text
+    private var typedBuffer = ""
+
+    /// Shows the text in the box you're typing into. Reads it through Accessibility when the
+    /// app allows it; otherwise shows what was typed on this keyboard. Passwords show as dots.
+    private func updatePreview() {
+        guard let label = previewLabel else { return }
+        var text = typedBuffer
+        var secure = false
+        let system = AXUIElementCreateSystemWide()
+        var focused: CFTypeRef?
+        if AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+           let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            let el = focused as! AXUIElement
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
+            var subrole: CFTypeRef?
+            AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &subrole)
+            secure = (subrole as? String) == (kAXSecureTextFieldSubrole as String)
+            var value: CFTypeRef?
+            if !secure, AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &value) == .success,
+               let str = value as? String {
+                text = str
+            }
+        }
+        if secure { text = String(repeating: "•", count: typedBuffer.count) }
+        // Show the end of long text, on one line
+        let oneLine = text.replacingOccurrences(of: "\n", with: " ⏎ ")
+        let tail = oneLine.count > 90 ? "…" + oneLine.suffix(89) : oneLine
+        let caret = "▏"
+        if tail.isEmpty {
+            label.stringValue = ""
+            label.placeholderString = "Start typing…"
+        } else {
+            label.stringValue = tail + caret
+        }
     }
 
     /// Re-lay out at the current screen size (call after the display scale changes)
@@ -301,7 +351,8 @@ final class ControllerKeyboard {
         let allRows = rows()
         let rowWidths = allRows.map { $0.reduce(0) { $0 + $1.width } * u }
         let width = (rowWidths.max() ?? 0) + pad * 2
-        let height = CGFloat(allRows.count) * u + pad * 2
+        let previewHeight = u * 0.9
+        let height = CGFloat(allRows.count) * u + pad * 2 + previewHeight + pad * 0.6
 
         let panel = self.panel ?? makePanel()
         self.panel = panel
@@ -313,10 +364,36 @@ final class ControllerKeyboard {
         content.layer?.cornerRadius = u * 0.35
         content.layer?.masksToBounds = true
 
+        // Preview bar across the top
+        let barFrame = NSRect(x: pad + u * 0.05, y: height - pad - previewHeight,
+                              width: width - pad * 2 - u * 0.1, height: previewHeight)
+        let bar = NSView(frame: barFrame)
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.85).cgColor
+        bar.layer?.cornerRadius = previewHeight * 0.25
+        bar.layer?.borderWidth = 1
+        bar.layer?.borderColor = NSColor(white: 1, alpha: 0.12).cgColor
+        let fontSize = previewHeight * 0.42
+        let label = NSTextField(labelWithString: "")
+        label.font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+        label.textColor = .white
+        label.lineBreakMode = .byTruncatingHead
+        label.maximumNumberOfLines = 1
+        label.placeholderAttributedString = NSAttributedString(string: "Start typing…", attributes: [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .regular),
+            .foregroundColor: NSColor(white: 1, alpha: 0.35)])
+        let lh = fontSize * 1.35
+        label.frame = NSRect(x: previewHeight * 0.35, y: (previewHeight - lh) / 2,
+                             width: barFrame.width - previewHeight * 0.7, height: lh)
+        bar.addSubview(label)
+        content.addSubview(bar)
+        previewLabel = label
+
         grid = []
+        let keysTop = height - pad - previewHeight - pad * 0.6
         for (i, row) in allRows.enumerated() {
             var x = (width - rowWidths[i]) / 2
-            let y = height - pad - CGFloat(i + 1) * u
+            let y = keysTop - CGFloat(i + 1) * u
             var keys: [KeyView] = []
             for key in row {
                 let v = KeyView(label: key.label, isActive: key.active, action: key.action)
@@ -330,6 +407,7 @@ final class ControllerKeyboard {
         clampFocus()
         applyFocus()
         panel.contentView = content
+        updatePreview()
         let vf = screen.visibleFrame
         panel.setFrame(NSRect(x: vf.midX - width / 2, y: vf.minY + u * 0.4, width: width, height: height),
                        display: true)
@@ -352,6 +430,8 @@ final class ControllerKeyboard {
 
     private func typeCharacter(_ s: String) {
         Output.shared.type(s)
+        typedBuffer += s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.updatePreview() }
         if shift && !symbols {
             shift = false
             layout()
@@ -360,6 +440,9 @@ final class ControllerKeyboard {
 
     private func pressKey(_ code: CGKeyCode) {
         Output.shared.tap(KeyShortcut(keyCode: code))
+        if code == 51, !typedBuffer.isEmpty { typedBuffer.removeLast() }
+        if code == 36 { typedBuffer += "\n" }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.updatePreview() }
     }
 
     // MARK: PS5-style controller shortcuts while the keyboard is open
