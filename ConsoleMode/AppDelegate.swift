@@ -433,9 +433,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     private var hideCount = 0
 
+    /// Swift hides CGCursorIsVisible, but CoreGraphics still has it
+    private static let cursorIsVisible: (@convention(c) () -> Int32)? = {
+        guard let f = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGCursorIsVisible") else { return nil }
+        return unsafeBitCast(f, to: (@convention(c) () -> Int32).self)
+    }()
+
     /// Some apps force the arrow back on (cursor changes, windows opening); hide it again
     private func keepArrowHidden() {
-        guard arrowHidden, CGCursorIsVisible() != 0, hideCount < 8 else { return }
+        guard arrowHidden, hideCount < 8, let isVisible = Self.cursorIsVisible, isVisible() != 0 else { return }
         CGDisplayHideCursor(CGMainDisplayID())
         hideCount += 1
     }
