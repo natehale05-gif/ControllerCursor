@@ -365,7 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             }
             lastPointer = Output.pointerLocation()
             followPointer()
-            if !(keyboard.isVisible && keyboard.focusActive) { ringPanel.orderFrontRegardless() }
+            updateCursorVisibility()
             let t = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in self?.tick() }
             RunLoop.main.add(t, forMode: .common)
             followTimer = t
@@ -392,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     private func tick() {
         let now = Date()
         let p = Output.pointerLocation()
-        defer { lastPointer = p; followPointer(p) }
+        defer { lastPointer = p; followPointer(p); keepArrowHidden() }
         // The pointer jumps when the screen size changes; don't mistake that for the mouse
         guard now.timeIntervalSince(lastDisplayChange) > 2 else { return }
         if p != lastPointer,
@@ -409,11 +409,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     /// While you type with the D-pad, neither the circle nor the arrow is shown
     private func updateCursorVisibility() {
-        let typing = keyboard.isVisible && keyboard.focusActive
+        // Only with the controller: opened from the menu with a mouse, keep the arrow
+        let typing = keyboard.isVisible && keyboard.focusActive && controllerMode
         if typing {
             ringPanel.orderOut(nil)
             if !arrowHidden {
                 CGDisplayHideCursor(CGMainDisplayID())
+                hideCount = 1
                 arrowHidden = true
             }
         } else {
@@ -424,8 +426,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     private func showArrow() {
         guard arrowHidden else { return }
-        CGDisplayShowCursor(CGMainDisplayID())
+        for _ in 0..<max(1, hideCount) { CGDisplayShowCursor(CGMainDisplayID()) }
+        hideCount = 0
         arrowHidden = false
+    }
+
+    private var hideCount = 0
+
+    /// Some apps force the arrow back on (cursor changes, windows opening); hide it again
+    private func keepArrowHidden() {
+        guard arrowHidden, CGCursorIsVisible() != 0, hideCount < 8 else { return }
+        CGDisplayHideCursor(CGMainDisplayID())
+        hideCount += 1
     }
 
     /// Lets this background app hide the arrow (macOS normally only allows the frontmost app)

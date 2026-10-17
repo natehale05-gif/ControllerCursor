@@ -444,8 +444,34 @@ final class ControllerManager {
 
     private func moveWithSticks(_ pad: GCExtendedGamepad, dt: TimeInterval) {
         let d = settings.data
+        // Keyboard open: like a PS5, the left stick moves the highlighted key instead of a pointer
+        if delegate?.keyboardVisible == true {
+            let x = pad.leftThumbstick.xAxis.value, y = pad.leftThumbstick.yAxis.value
+            var dir: PadButton?
+            if hypot(x, y) > 0.55 {
+                dir = abs(x) > abs(y) ? (x > 0 ? .right : .left) : (y > 0 ? .up : .down)
+            } else if hypot(x, y) > 0.35, let held = stickKeyDir {
+                dir = held   // a little hysteresis so it doesn't stutter near the edge
+            }
+            let now = Date()
+            if let dir {
+                delegate?.controllerActivity()
+                if dir != stickKeyDir {
+                    stickKeyDir = dir
+                    stickKeyNext = now.addingTimeInterval(0.35)
+                    _ = delegate?.keyboardButton(dir, down: true)
+                } else if now >= stickKeyNext {
+                    stickKeyNext = now.addingTimeInterval(0.11)
+                    _ = delegate?.keyboardButton(dir, down: true)
+                }
+            } else {
+                stickKeyDir = nil
+            }
+        } else {
+            stickKeyDir = nil
+        }
         // Left stick: pointer
-        if let (vx, vy) = shaped(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value,
+        if delegate?.keyboardVisible != true, let (vx, vy) = shaped(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value,
                                  deadzone: 0.12, exponent: 1 + d.stickAcceleration * 2) {
             delegate?.controllerActivity()
             let speed = CGFloat(250 + d.stickSpeed * 2250) * CGFloat(dt)
@@ -469,6 +495,9 @@ final class ControllerManager {
             }
         }
     }
+
+    private var stickKeyDir: PadButton?
+    private var stickKeyNext = Date.distantPast
 
     var sticksDeflected: Bool {
         guard let pad = controller?.extendedGamepad else { return false }
@@ -504,6 +533,8 @@ final class ControllerManager {
                 return
             }
         }
+        // Keyboard open without swipe typing: the touchpad must not bring the pointer back
+        if touching, delegate?.keyboardVisible == true { return }
         if touching {
             if let last = touchLast {
                 let scale = CGFloat(500 + settings.data.touchpadSpeed * 1500)
