@@ -1,0 +1,19 @@
+name: Retag (one time)
+on: push
+permissions:
+  contents: write
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Point release tags at the rewritten history
+        run: |
+          git push --force origin ca6ab06e5e8d5b920f7807cfcbfe0fc8e29437b7:refs/tags/v3.0
+          git push --force origin ff75e944a982a8649ab4e33dc34c95b35233cfb4:refs/tags/v3.1
+          git push --force origin 7463a7a6f26fb10a1ac767adb711fc4d770a795e:refs/tags/v3.1.1
+          git push --force origin f2bddbeea08ebcc7e4402cc6d57c26db67bdc40a:refs/tags/v3.2
+          git push --force origin 35e80b6adc91204578980c560ccec23dc966fa27:refs/tags/v3.2.1
+          git push --force origin 41fddbdfe313e55ab3044c64408b3503aa0f15da:refs/tags/v3.2.2
