@@ -78,7 +78,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
                 && !self.keyboard.isVisible && !self.voice.isActive
         }
 
-        if !out.hasPermission { _ = CGRequestPostEventAccess() }
+        if !out.hasPermission {
+            _ = CGRequestPostEventAccess()
+            // After an update signed with a new key, macOS keeps a stale entry and won't ask again
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, !self.out.hasPermission else { return }
+                self.toast.show("Turn on Console Mode in Accessibility (remove it with − and add it again if it's already on)",
+                                symbol: "hand.raised.fill", tint: .systemOrange, duration: 8)
+                self.openAccessibility()
+            }
+        }
 
         // React to settings changes
         settings.$data.dropFirst().debounce(for: .milliseconds(50), scheduler: RunLoop.main).sink { [weak self] _ in
@@ -237,6 +246,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     func buttonsChanged(quickMenu: Bool) { refreshHints(quickMenu: quickMenu) }
+
+    func showMessage(_ text: String) {
+        toast.show(text, symbol: "exclamationmark.bubble.fill", tint: .systemOrange, duration: 4)
+    }
 
     func keyboardTouch(_ point: CGPoint?) -> Bool { keyboard.touch(point) }
 

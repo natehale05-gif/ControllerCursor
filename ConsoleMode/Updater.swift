@@ -5,7 +5,7 @@ import AppKit
 final class Updater: ObservableObject {
     static let repo = "natehale05-gif/ControllerCursor"
     /// Every real build is signed with this certificate; anything else is refused
-    static let signingRequirement = #"certificate leaf = H"78daa50cf7a8c0f0d0d491b57e46be91cf28add1""#
+    static let signingRequirement = #"certificate leaf = H"7e003be47e971485c26b551c133545e48857bd9a""#
 
     @Published var status = ""
     @Published var busy = false

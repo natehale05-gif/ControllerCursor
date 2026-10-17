@@ -191,6 +191,21 @@ final class Output {
 
     // MARK: Apps
 
+    /// Opens Siri the same way the Siri key does. `failed` gets a reason to show if it can't.
+    func openSiri(failed: @escaping (String) -> Void) {
+        let fm = FileManager.default
+        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Siri")
+            ?? ["/System/Applications/Siri.app", "/Applications/Siri.app"].map { URL(fileURLWithPath: $0) }
+                .first { fm.fileExists(atPath: $0.path) }
+        guard let url else { failed("Siri isn't available on this Mac"); return }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            guard error != nil else { return }
+            DispatchQueue.main.async { failed("Couldn't open Siri. Turn it on in System Settings → Apple Intelligence & Siri") }
+        }
+    }
+
     func openApp(bundleID: String) {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())

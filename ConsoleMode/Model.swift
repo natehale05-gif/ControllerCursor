@@ -413,7 +413,7 @@ struct SettingsData: Codable {
     var swipeTyping = true
     var largeSettingsWithController = true
     var autoUpdate = true
-    var layoutVersion = 2
+    var layoutVersion = 3
     var lightRed = 0.0, lightGreen = 0.35, lightBlue = 1.0
 
     init() {}
@@ -461,6 +461,7 @@ struct SettingsData: Codable {
         autoUpdate = (try? c.decode(Bool.self, forKey: .autoUpdate)) ?? d.autoUpdate
         layoutVersion = (try? c.decode(Int.self, forKey: .layoutVersion)) ?? 1
         if layoutVersion < 2 { Defaults.upgradeToV2(&profiles); layoutVersion = 2 }
+        if layoutVersion < 3 { Defaults.upgradeToV3(&profiles); layoutVersion = 3 }
     }
 }
 
@@ -498,6 +499,19 @@ enum Defaults {
             for (button, oldBinding) in old.merging(profiles[i].style == .xbox ? oldXbox : [:], uniquingKeysWith: { $1 })
             where profiles[i].base[button] == oldBinding {
                 profiles[i].base[button] = fresh[button]
+            }
+        }
+    }
+
+    /// 3.1 added "hold Options for Siri" (and hold △ to talk); layouts saved by 3.0 never got them.
+    /// Add the hold only where the button still does exactly what it did by default.
+    static func upgradeToV3(_ profiles: inout [Profile]) {
+        for i in profiles.indices {
+            let fresh = profiles[i].style == .xbox ? xboxBase : base
+            for button in [PadButton.options, .triangle] {
+                guard let current = profiles[i].base[button], let wanted = fresh[button],
+                      current.hold.kind == .none, current.press == wanted.press else { continue }
+                profiles[i].base[button] = wanted
             }
         }
     }

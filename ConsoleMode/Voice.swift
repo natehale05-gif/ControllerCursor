@@ -46,11 +46,16 @@ final class VoiceTyping {
         }
     }
 
-    private func begin() {
+    private func begin(onDevice: Bool = true) {
         guard wanted, !isListening else { return }
-        guard let recognizer, recognizer.isAvailable else {
+        guard let recognizer else {
             wanted = false
-            onMessage?("Speech recognition isn't available right now")
+            onMessage?("Speech recognition doesn't support your Mac's language")
+            return
+        }
+        guard recognizer.isAvailable else {
+            wanted = false
+            onMessage?("Turn on Dictation in System Settings → Keyboard, then try again")
             return
         }
         // A fresh engine each time picks up mic changes (AirPods connecting, etc.)
@@ -64,9 +69,14 @@ final class VoiceTyping {
         }
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+        req.taskHint = .dictation
+        if #available(macOS 13.0, *) { req.addsPunctuation = true }
+        // On-device is faster and private, but only works once macOS has downloaded the speech model
+        let useOnDevice = onDevice && !onDeviceBroken && recognizer.supportsOnDeviceRecognition
+        req.requiresOnDeviceRecognition = useOnDevice
         request = req
         latest = ""
+        heardSomething = false
         session += 1
         let mySession = session
 
@@ -88,13 +98,66 @@ final class VoiceTyping {
             DispatchQueue.main.async {
                 guard let self, self.session == mySession else { return }
                 if let result {
+                    self.heardSomething = true
                     self.latest = result.bestTranscription.formattedString
                     if self.isListening { self.onUpdate?(self.latest) }
                     if result.isFinal { self.deliver(mySession) }
-                } else if error != nil, !self.isListening {
+                    return
+                }
+                guard let error else { return }
+                if useOnDevice, !self.heardSomething, !Self.isNoSpeech(error) { self.onDeviceBroken = true }
+                if self.isListening {
+                    // Failed while still talking: retry with Apple's servers, or explain what's wrong
+                    self.abort()
+                    if useOnDevice, !self.heardSomething, self.wanted {
+                        self.begin(onDevice: false)
+                    } else {
+                        self.wanted = false
+                        self.onUpdate?(nil)
+                        self.onMessage?(Self.explain(error))
+                    }
+                } else {
+                    if !self.heardSomething, !Self.isNoSpeech(error) { self.onMessage?(Self.explain(error)) }
                     self.deliver(mySession)
                 }
             }
+        }
+    }
+
+    private var heardSomething = false
+    /// The on-device model failed once; use Apple's servers for the rest of this run
+    private var onDeviceBroken = false
+
+    /// Tear down the current attempt without typing anything
+    private func abort() {
+        isListening = false
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        task?.cancel()
+        task = nil
+        request = nil
+        session += 1
+    }
+
+    private static func isNoSpeech(_ error: Error) -> Bool {
+        let e = error as NSError
+        // "No speech detected" / cancelled
+        return (e.domain == "kAFAssistantErrorDomain" && (e.code == 1110 || e.code == 216 || e.code == 203))
+            || e.code == 301
+    }
+
+    private static func explain(_ error: Error) -> String {
+        let e = error as NSError
+        switch (e.domain, e.code) {
+        case ("kAFAssistantErrorDomain", 1700), ("kLSRErrorDomain", 201), ("kAFAssistantErrorDomain", 1101):
+            return "Turn on Dictation in System Settings → Keyboard, then try again"
+        case ("kLSRErrorDomain", 102), ("kLSRErrorDomain", 300):
+            return "macOS is still downloading the speech model. Try again in a minute"
+        case ("kAFAssistantErrorDomain", 1107), ("kAFAssistantErrorDomain", 1100):
+            return "Voice typing needs an internet connection right now"
+        default:
+            return "Voice typing didn't work: \(e.localizedDescription)"
         }
     }
 

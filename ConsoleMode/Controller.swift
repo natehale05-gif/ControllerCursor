@@ -14,6 +14,7 @@ protocol ControllerDelegate: AnyObject {
     /// D-pad "jump" actions: move to the next button/link. Return false to fall back to arrow keys.
     func navigate(_ dir: SnapNavigator.Direction) -> Bool
     func voiceTyping(_ start: Bool)
+    func showMessage(_ text: String)
     /// For the on-screen hints
     func buttonsChanged(quickMenu: Bool)
     /// Swipe typing: the touchpad position while the keyboard is open (nil when lifted). Return true if used.
@@ -397,7 +398,7 @@ final class ControllerManager {
             if isStart { out.openApp(bundleID: "com.apple.finder") }
         case .siri:
             // Opening Siri starts listening, just like holding the Siri key
-            if isStart { out.openApp(bundleID: "com.apple.Siri") }
+            if isStart { out.openSiri { [weak self] msg in self?.delegate?.showMessage(msg) } }
         case .lastApp:
             if isStart {
                 out.key(KeyShortcut(keyCode: 55, command: true), down: true)
