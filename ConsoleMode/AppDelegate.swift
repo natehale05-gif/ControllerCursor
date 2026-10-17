@@ -230,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     func voiceTyping(_ start: Bool) {
         if start {
-            if voice.isListening { voice.stop() } else { voice.start() }
+            if voice.isActive { voice.stop() } else { voice.start() }
         } else {
             voice.stop()
         }
