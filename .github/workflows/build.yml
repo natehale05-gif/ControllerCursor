@@ -20,8 +20,11 @@ jobs:
           security unlock-keychain -p ci build.keychain
           security set-keychain-settings -lut 3600 build.keychain
           if [ -z "$SIGNING_P12" ]; then echo "::error::Add the SIGNING_P12 and SIGNING_PASSWORD repository secrets"; exit 1; fi
-          echo "$SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
-          security import "$RUNNER_TEMP/signing.p12" -k build.keychain -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          # Pasting into GitHub can add spaces or line breaks; neither value contains any
+          printf %s "$SIGNING_P12" | tr -d '[:space:]' | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          PW=$(printf %s "$SIGNING_PASSWORD" | tr -d '[:space:]')
+          echo "key file sha1: $(shasum "$RUNNER_TEMP/signing.p12" | cut -c1-12), password length: ${#PW}"
+          security import "$RUNNER_TEMP/signing.p12" -k build.keychain -P "$PW" -T /usr/bin/codesign
           rm "$RUNNER_TEMP/signing.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
           security find-identity -p codesigning build.keychain
