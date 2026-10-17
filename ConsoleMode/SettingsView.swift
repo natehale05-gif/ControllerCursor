@@ -52,7 +52,7 @@ enum Pane: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject var status: StatusModel
-    @ObservedObject var live: LiveInput
+    let live: LiveInput   // only the Test Controller page watches it
     @ObservedObject var updater: Updater
     let actions: SettingsActions
     @State private var pane: Pane? = .general

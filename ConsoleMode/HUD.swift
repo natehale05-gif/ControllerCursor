@@ -33,6 +33,9 @@ final class HintsBar {
     private(set) var shown = false
     var scale: CGFloat = 1
 
+    /// Lift the bar above something at the bottom of the screen (the keyboard)
+    var bottomInset: CGFloat = 0
+
     func show(_ items: [(glyph: String, color: NSColor, title: String)], autoHideAfter: TimeInterval?) {
         guard let screen = NSScreen.screens.first, !items.isEmpty else { return }
         let fontSize: CGFloat = 15 * scale
@@ -54,7 +57,7 @@ final class HintsBar {
         bg.addSubview(label)
         panel.contentView = bg
         let vf = screen.visibleFrame
-        panel.setFrame(NSRect(x: vf.midX - size.width / 2, y: vf.minY + 18 * scale,
+        panel.setFrame(NSRect(x: vf.midX - size.width / 2, y: max(vf.minY + 18 * scale, bottomInset + 10),
                               width: size.width, height: size.height), display: true)
         if !shown {
             panel.alphaValue = 0
@@ -87,6 +90,7 @@ final class HintsBar {
 final class Toast {
     private let panel = makeHUDPanel()
     private var hideWork: DispatchWorkItem?
+    private var generation = 0
 
     func show(_ text: String, symbol: String, tint: NSColor = .white, duration: TimeInterval = 2.6) {
         guard let screen = NSScreen.screens.first else { return }
@@ -108,14 +112,19 @@ final class Toast {
         panel.contentView = bg
         let vf = screen.visibleFrame
         panel.setFrame(NSRect(x: vf.midX - w / 2, y: vf.maxY - h - 14, width: w, height: h), display: true)
+        generation += 1
+        let gen = generation
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { $0.duration = 0.18; panel.animator().alphaValue = 1 }
         hideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
+            guard let self, self.generation == gen else { return }
             NSAnimationContext.runAnimationGroup({ $0.duration = 0.3; self.panel.animator().alphaValue = 0 },
-                                                completionHandler: { self.panel.orderOut(nil) })
+                                                completionHandler: { [weak self] in
+                guard let self, self.generation == gen else { return }
+                self.panel.orderOut(nil)
+            })
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)

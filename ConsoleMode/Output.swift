@@ -150,13 +150,24 @@ final class Output {
 
     /// Types text into the frontmost app, whatever the keyboard layout
     func type(_ text: String) {
-        var chars = Array(text.utf16)
-        for down in [true, false] {
-            guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
-            e.flags = []
-            e.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
-            e.post(tap: .cghidEventTap)
+        // Apps only read up to 20 characters per key event, so send long text in pieces
+        var chunk: [UniChar] = []
+        func flush() {
+            guard !chunk.isEmpty else { return }
+            for down in [true, false] {
+                guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
+                e.flags = []
+                e.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
+                e.post(tap: .cghidEventTap)
+            }
+            chunk.removeAll()
         }
+        for ch in text {
+            let u = Array(String(ch).utf16)
+            if chunk.count + u.count > 20 { flush() }
+            chunk += u
+        }
+        flush()
     }
 
     // MARK: Media keys (volume, brightness, play/pause)

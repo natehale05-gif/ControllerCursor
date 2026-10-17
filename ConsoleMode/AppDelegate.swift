@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         controllers.start()
 
         voice.onUpdate = { [weak self] text in self?.voiceCaption.update(text) }
+        voice.shouldType = { [weak self] in !(self?.controllers.paused ?? false) }
         voice.onMessage = { [weak self] msg in self?.toast.show(msg, symbol: "mic.slash.fill", tint: .systemOrange, duration: 4) }
 
         // Follow the app in front: per-app profiles, and stepping aside for games
@@ -70,7 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         }
         frontmostChanged()
 
-        updater.startAutomaticChecks { [weak self] in self?.settings.data.autoUpdate ?? false }
+        // Install updates on their own only while the controller isn't being used and no game is open
+        updater.startAutomaticChecks { [weak self] in
+            guard let self else { return false }
+            return self.settings.data.autoUpdate && !self.controllerMode && !self.controllers.paused
+                && !self.keyboard.isVisible && !self.voice.isActive
+        }
 
         if !out.hasPermission { _ = CGRequestPostEventAccess() }
 
@@ -84,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             guard let self else { return }
             self.keyboard.pointRatio = self.displayScaler.pointRatio
             self.keyboard.refresh()
+            if self.hints.shown { self.refreshHints() }
         }
 
         let statusTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refreshStatus() }
@@ -167,7 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     private func frontmostChanged() {
         let app = NSWorkspace.shared.frontmostApplication
         // Ignore Console Mode's own windows (Settings)
-        if app?.processIdentifier == ProcessInfo.processInfo.processIdentifier { return }
+        if app?.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+            setPaused(nil)   // Console Mode's own Settings window is never a game
+            return
+        }
         settings.frontmostBundleID = app?.bundleIdentifier
         controllers.applyGestureStates()
         let game = settings.data.pauseInGames && GameDetector.isGame(app, extra: settings.data.extraGames)
@@ -208,8 +218,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     func navigate(_ dir: SnapNavigator.Direction) -> Bool {
-        guard out.hasPermission, !snap.focusedIsTextInput() else { return false }
-        return snap.jump(dir)
+        // Typing in a text box, or moving through a menu: the D-pad acts as arrow keys
+        guard out.hasPermission, !snap.focusedIsTextInput(), !snap.menuOpen() else { return false }
+        snap.jump(dir) { [weak self] found in
+            guard !found, let self else { return }
+            let arrow: ActionKind = dir == .up ? .arrowUp : dir == .down ? .arrowDown : dir == .left ? .arrowLeft : .arrowRight
+            if let s = arrow.shortcut { self.out.tap(s) }
+        }
+        return true
     }
 
     func voiceTyping(_ start: Bool) {
@@ -270,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
             if !quickMenu { add(.l2, "Quick Menu") }
         }
         hints.scale = displayScaler.pointRatio
+        hints.bottomInset = keyboard.isVisible ? keyboard.topEdge : 0
         hints.show(items, autoHideAfter: mode == .autoHide ? 4 : nil)
     }
 
@@ -296,6 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         let handled: Set<PadButton> = [.square, .triangle, .circle, .l1, .r1, .r2, .l2, .r3, .l3, .options, .create,
                                        .up, .down, .left, .right, .touchpad]
         guard handled.contains(button) else { return false }
+        if button == .touchpad && !settings.data.swipeTyping { return false }
         guard down else { return true }
         switch button {
         case .up: keyboard.moveFocus(.up)

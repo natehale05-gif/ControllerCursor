@@ -9,7 +9,14 @@ final class SnapNavigator {
     private var cached: [CGRect] = []
     private var cachedAt = Date.distantPast
     private var cachedPID: pid_t = 0
-    private var enabledPIDs: Set<pid_t> = []
+    private var enabledPIDs: Set<String> = []
+    private let queue = DispatchQueue(label: "consolemode.snap", qos: .userInitiated)
+    private var scanning = false
+
+    init() {
+        // A frozen app must never freeze the controller: give up on any Accessibility call after 0.25 s
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
+    }
 
     private static let clickableRoles: Set<String> = [
         "AXButton", "AXLink", "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox",
@@ -20,20 +27,51 @@ final class SnapNavigator {
 
     /// True when a text box has focus — then the D-pad should move the text cursor instead
     func focusedIsTextInput() -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid() else { return false }
         let system = AXUIElementCreateSystemWide()
         guard let el = copyElement(system, kAXFocusedUIElementAttribute) else { return false }
         return Self.textRoles.contains(string(el, kAXRoleAttribute) ?? "")
     }
 
-    /// Jumps toward the nearest clickable thing in that direction. Returns false if there isn't one.
-    func jump(_ dir: Direction) -> Bool {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return false }
-        let pid = app.processIdentifier
-        if pid != cachedPID || Date().timeIntervalSince(cachedAt) > 0.6 {
-            cached = collectTargets(pid: pid)
-            cachedPID = pid
-            cachedAt = Date()
+    /// Jumps toward the nearest clickable thing in that direction. Scanning the window happens
+    /// off the main thread; `done(false)` means there was nothing to jump to.
+    func jump(_ dir: Direction, done: @escaping (Bool) -> Void) {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else {
+            done(false); return
         }
+        let pid = app.processIdentifier
+        if pid == cachedPID, Date().timeIntervalSince(cachedAt) < 1.0 {
+            done(jumpNow(dir))
+            return
+        }
+        guard !scanning else { done(true); return }   // a scan is already running; ignore this press
+        scanning = true
+        let key = "\(pid)-\(app.launchDate?.timeIntervalSince1970 ?? 0)"
+        queue.async { [weak self] in
+            guard let self else { return }
+            let found = self.collectTargets(pid: pid, key: key)
+            DispatchQueue.main.async {
+                self.cached = found
+                self.cachedPID = pid
+                self.cachedAt = Date()
+                self.scanning = false
+                done(self.jumpNow(dir))
+            }
+        }
+    }
+
+    /// True when a menu is open (the arrow keys move through menus)
+    func menuOpen() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else { return false }
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        if let focused = copyElement(appEl, kAXFocusedUIElementAttribute) {
+            let role = string(focused, kAXRoleAttribute) ?? ""
+            if role == "AXMenu" || role == "AXMenuItem" { return true }
+        }
+        return (children(appEl) ?? []).contains { string($0, kAXRoleAttribute) == "AXMenu" }
+    }
+
+    private func jumpNow(_ dir: Direction) -> Bool {
         let p = Output.pointerLocation()
         var best: (CGRect, CGFloat)?
         for r in cached {
@@ -53,34 +91,36 @@ final class SnapNavigator {
         }
         guard let target = best?.0 else { return false }
         Output.shared.movePointer(to: CGPoint(x: target.midX, y: target.midY))
+        cachedAt = Date()   // things rarely move between quick presses
         return true
     }
 
     // MARK: Accessibility tree walk
 
-    private func collectTargets(pid: pid_t) -> [CGRect] {
+    private func collectTargets(pid: pid_t, key: String) -> [CGRect] {
         let appEl = AXUIElementCreateApplication(pid)
         // Chrome, Electron and similar only build their accessibility tree when asked
-        if !enabledPIDs.contains(pid) {
+        if !enabledPIDs.contains(key) {
             AXUIElementSetAttributeValue(appEl, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-            enabledPIDs.insert(pid)
+            enabledPIDs.insert(key)
         }
         var roots: [AXUIElement] = []
         if let win = copyElement(appEl, kAXFocusedWindowAttribute) { roots.append(win) }
         if let sheet = copyElement(appEl, "AXFocusedUIElement"), roots.isEmpty { roots.append(sheet) }
-        let screens = NSScreen.screens.map { s -> CGRect in
-            let maxY = NSScreen.screens.first?.frame.maxY ?? 0
-            return CGRect(x: s.frame.minX, y: maxY - s.frame.maxY, width: s.frame.width, height: s.frame.height)
-        }
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        let screens = ids.map { CGDisplayBounds($0) }
         let screenArea = screens.map { $0.width * $0.height }.max() ?? 1
 
         var results: [CGRect] = []
         var queue = roots
-        var visited = 0
-        let deadline = Date().addingTimeInterval(0.12)
-        while !queue.isEmpty, visited < 3000, Date() < deadline {
-            let el = queue.removeFirst()
-            visited += 1
+        var head = 0
+        let deadline = Date().addingTimeInterval(0.8)   // background thread, so a longer budget is fine
+        while head < queue.count, head < 4000, Date() < deadline {
+            let el = queue[head]
+            head += 1
             let role = string(el, kAXRoleAttribute) ?? ""
             if Self.clickableRoles.contains(role), let r = frame(el),
                r.width >= 6, r.height >= 6, r.width * r.height < screenArea * 0.4,

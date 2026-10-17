@@ -172,6 +172,8 @@ final class ControllerKeyboard {
     var pointRatio: CGFloat = 1
 
     var isVisible: Bool { panel?.isVisible ?? false }
+    /// Top of the keyboard on screen (so the hints can sit above it)
+    var topEdge: CGFloat { panel?.frame.maxY ?? 0 }
 
     private let numberRow = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
     private let letterRows = [["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
@@ -205,6 +207,9 @@ final class ControllerKeyboard {
         shift = false
         focusActive = false
         lastSwipe = nil
+        swipePath = []
+        touchedKey = nil
+        swipeStart = nil
         onStateChange?()
     }
 
@@ -216,6 +221,26 @@ final class ControllerKeyboard {
     /// What's been typed with this keyboard, for apps that don't share their text
     private var typedBuffer = ""
 
+    /// The last ~150 characters of a text box, without copying a whole long document
+    private static func tailText(_ el: AXUIElement) -> String? {
+        var countRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, kAXNumberOfCharactersAttribute as CFString, &countRef) == .success,
+           let n = countRef as? Int {
+            var range = CFRange(location: max(0, n - 150), length: min(150, n))
+            if let axRange = AXValueCreate(.cfRange, &range) {
+                var out: CFTypeRef?
+                if AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString,
+                                                              axRange, &out) == .success, let s = out as? String {
+                    return s
+                }
+            }
+        }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &value) == .success,
+              let s = value as? String else { return nil }
+        return String(s.suffix(150))
+    }
+
     /// Shows the text in the box you're typing into. Reads it through Accessibility when the
     /// app allows it; otherwise shows what was typed on this keyboard. Passwords show as dots.
     private func updatePreview() {
@@ -224,7 +249,9 @@ final class ControllerKeyboard {
         var secure = false
         let system = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
-        if AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+        let ownAppInFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid()
+        if !ownAppInFront,
+           AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
            let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
             let el = focused as! AXUIElement
             var role: CFTypeRef?
@@ -232,11 +259,7 @@ final class ControllerKeyboard {
             var subrole: CFTypeRef?
             AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &subrole)
             secure = (subrole as? String) == (kAXSecureTextFieldSubrole as String)
-            var value: CFTypeRef?
-            if !secure, AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &value) == .success,
-               let str = value as? String {
-                text = str
-            }
+            if !secure, let str = Self.tailText(el) { text = str }
         }
         if secure { text = String(repeating: "•", count: typedBuffer.count) }
         // Show the end of long text, on one line
@@ -458,6 +481,7 @@ final class ControllerKeyboard {
     }
 
     private func pressKey(_ code: CGKeyCode, keepSwipe: Bool = false) {
+        if !keepSwipe, lastSwipe != nil { lastSwipe = nil; showSuggestions() }
         Output.shared.tap(KeyShortcut(keyCode: code))
         if code == 51, !typedBuffer.isEmpty { typedBuffer.removeLast() }
         if code == 36 { typedBuffer += "\n" }
@@ -470,7 +494,7 @@ final class ControllerKeyboard {
     func backspace() {
         // Right after a swipe, delete the whole word
         if let swipe = lastSwipe {
-            for _ in 0..<(swipe.words[swipe.index].count + 1) { pressKey(51) }
+            for _ in 0..<(swipe.words[swipe.index].count + 1) { pressKey(51, keepSwipe: true) }
             lastSwipe = nil
             showSuggestions()
             return
@@ -482,12 +506,14 @@ final class ControllerKeyboard {
 
     private var swipePath: [Character] = []
     private var touchedKey: KeyView?
+    private var swipeStart: Date?
     private var lastSwipe: (words: [String], index: Int, capitalized: Bool)?
 
     /// Touchpad position (-1…1 both ways) while the keyboard is open; nil when the finger lifts
     func touch(_ point: CGPoint?) -> Bool {
         guard isVisible else { return false }
         guard let point else { finishSwipe(); return true }
+        if swipeStart == nil { swipeStart = Date() }
         let letterRows = grid.indices.filter { $0 >= 1 && $0 <= 3 }
         let letterKeys = letterRows.flatMap { grid[$0] }
         guard let area = letterKeys.map(\.frame).reduce(nil, { (acc: CGRect?, r) in acc?.union(r) ?? r }) else { return false }
@@ -511,9 +537,10 @@ final class ControllerKeyboard {
     }
 
     private func finishSwipe() {
-        defer { swipePath = []; touchedKey = nil }
-        // A tap (or a swipe that stayed on one key): press that key
-        guard Set(swipePath).count >= 2 else {
+        let duration = swipeStart.map { Date().timeIntervalSince($0) } ?? 0
+        defer { swipePath = []; touchedKey = nil; swipeStart = nil }
+        // A tap (even one that wobbles onto the next key): press that key
+        guard Set(swipePath).count >= 2, swipePath.count >= 3 || duration > 0.25 else {
             touchedKey?.activate()
             return
         }
@@ -530,7 +557,7 @@ final class ControllerKeyboard {
     /// Right after a swipe, R1 swaps in the next guess
     func nextSuggestion() -> Bool {
         guard var swipe = lastSwipe, swipe.words.count > 1 else { return false }
-        for _ in 0..<(swipe.words[swipe.index].count + 1) { pressKey(51) }
+        for _ in 0..<(swipe.words[swipe.index].count + 1) { pressKey(51, keepSwipe: true) }
         swipe.index = (swipe.index + 1) % swipe.words.count
         lastSwipe = swipe
         typeCharacter(display(swipe.words[swipe.index], swipe.capitalized) + " ", fromSwipe: true)

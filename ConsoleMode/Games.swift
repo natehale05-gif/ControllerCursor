@@ -22,7 +22,13 @@ enum GameDetector {
     private static var cache: [String: Bool] = [:]
 
     static func isGame(_ app: NSRunningApplication?, extra: [String]) -> Bool {
-        guard let app, let id = app.bundleIdentifier else { return false }
+        guard let app else { return false }
+        // Windows games through Wine / CrossOver / Whisky, and Steam games without a bundle ID
+        if let exe = app.executableURL?.path.lowercased(),
+           exe.contains("wine") || exe.contains("crossover") || exe.contains("whisky") || exe.contains("/steamapps/common/") {
+            return true
+        }
+        guard let id = app.bundleIdentifier else { return false }
         if extra.contains(id) || builtIn.contains(id) { return true }
         if let known = cache[id] { return known }
         var game = false

@@ -113,7 +113,9 @@ final class Updater: ObservableObject {
         status = "Updated to \(version). Restarting…"
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        task.arguments = ["-c", "sleep 1; open \"$0\"", currentApp.path]
+        // Wait until this copy has fully quit (it restores the screen size first), then open the new one
+        task.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; open \"$0\"",
+                          currentApp.path]
         try? task.run()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
     }

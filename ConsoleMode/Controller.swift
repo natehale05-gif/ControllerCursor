@@ -225,17 +225,19 @@ final class ControllerManager {
         var pressed = Set<PadButton>()
         for b in PadButton.allCases where isDown(b, pad) { pressed.insert(b) }
         if live.pressed != pressed { live.pressed = pressed }
-        live.left = CGPoint(x: CGFloat(pad.leftThumbstick.xAxis.value), y: CGFloat(pad.leftThumbstick.yAxis.value))
-        live.right = CGPoint(x: CGFloat(pad.rightThumbstick.xAxis.value), y: CGFloat(pad.rightThumbstick.yAxis.value))
-        live.l2 = pad.leftTrigger.value
-        live.r2 = pad.rightTrigger.value
+        let l = CGPoint(x: CGFloat(pad.leftThumbstick.xAxis.value), y: CGFloat(pad.leftThumbstick.yAxis.value))
+        let r = CGPoint(x: CGFloat(pad.rightThumbstick.xAxis.value), y: CGFloat(pad.rightThumbstick.yAxis.value))
+        if live.left != l { live.left = l }
+        if live.right != r { live.right = r }
+        if live.l2 != pad.leftTrigger.value { live.l2 = pad.leftTrigger.value }
+        if live.r2 != pad.rightTrigger.value { live.r2 = pad.rightTrigger.value }
         if let (a, b) = touchpadPads(pad) {
             var points: [CGPoint] = []
             for t in [a, b] {
                 let x = CGFloat(t.xAxis.value), y = CGFloat(t.yAxis.value)
                 if x != 0 || y != 0 { points.append(CGPoint(x: x, y: y)) }
             }
-            live.touches = points
+            if live.touches != points { live.touches = points }
         }
     }
 
@@ -347,6 +349,7 @@ final class ControllerManager {
     }
 
     private func releaseAll() {
+        for (_, p) in down where p.holdFired && p.binding.hold.kind == .voiceTyping { delegate?.voiceTyping(false) }
         for (_, p) in down where p.pressFired && !p.handledByKeyboard { perform(p.binding.press, phase: .up) }
         down.removeAll()
         touchLast = nil
