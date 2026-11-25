@@ -122,6 +122,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Siri finishing up sends this too; only open Settings when you actually opened Console Mode
+        guard Date().timeIntervalSince(out.lastSiriOpen) > 15 else { return false }
         openSettings()
         return true
     }

@@ -268,7 +268,11 @@ final class Output {
     // MARK: Apps
 
     /// Opens Siri the same way the Siri key does. `failed` gets a reason to show if it can't.
+    /// When Siri was last opened; macOS sends Console Mode a "reopen" afterwards that isn't the user's
+    private(set) var lastSiriOpen = Date.distantPast
+
     func openSiri(failed: @escaping (String) -> Void) {
+        lastSiriOpen = Date()
         let fm = FileManager.default
         let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Siri")
             ?? ["/System/Applications/Siri.app", "/Applications/Siri.app"].map { URL(fileURLWithPath: $0) }
