@@ -9,7 +9,7 @@ struct SettingsActions {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case general, controller, test, profiles, buttons, pointer, display, games
+    case general, controller, test, profiles, buttons, pointer, displays, display, games
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -19,6 +19,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .profiles: return "Profiles"
         case .buttons: return "Buttons"
         case .pointer: return "Pointer & Scrolling"
+        case .displays: return "Displays"
         case .display: return "Display & Keyboard"
         case .games: return "Games"
         }
@@ -31,6 +32,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .profiles: return "person.2.crop.square.stack"
         case .buttons: return "circle.grid.cross"
         case .pointer: return "cursorarrow.motionlines"
+        case .displays: return "display.2"
         case .display: return "textformat.size"
         case .games: return "flag.checkered"
         }
@@ -43,6 +45,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .profiles: return .purple
         case .buttons: return .indigo
         case .pointer: return .orange
+        case .displays: return .cyan
         case .display: return .teal
         case .games: return .red
         }
@@ -87,6 +90,7 @@ struct SettingsView: View {
                 case .profiles: ProfilesPane(settings: settings)
                 case .buttons: ButtonsPane(settings: settings)
                 case .pointer: PointerPane(settings: settings)
+                case .displays: DisplaysPane(settings: settings)
                 case .display: DisplayPane(settings: settings)
                 }
             }

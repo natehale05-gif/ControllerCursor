@@ -20,14 +20,26 @@ final class Output {
 
     static func pointerLocation() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
 
-    /// Bounds of all screens in global (top-left origin) coordinates
-    private func clamp(_ p: CGPoint) -> CGPoint {
+    /// Cross to a neighbouring display anywhere along the shared side, even where the edges don't line up
+    var crossAnyEdge = true
+
+    private static func displayRects() -> [CGRect] {
         var count: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &count)
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         CGGetActiveDisplayList(count, &ids, &count)
-        let rects = ids.map { CGDisplayBounds($0) }
+        // Mirrored displays share one spot; count it once
+        return ids.filter { CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }.map { CGDisplayBounds($0) }
+    }
+
+    /// Where the pointer should end up when moving from `from` toward `p`
+    private func clamp(_ p: CGPoint, from: CGPoint? = nil) -> CGPoint {
+        let rects = Self.displayRects()
         if rects.contains(where: { $0.contains(p) }) { return p }
+        if crossAnyEdge, let from, let here = rects.first(where: { $0.contains(from) }),
+           let crossed = cross(from: here, toward: p, rects: rects) {
+            return crossed
+        }
         // Snap to the closest point on the nearest screen
         var best = p
         var bestDist = CGFloat.greatestFiniteMagnitude
@@ -39,6 +51,56 @@ final class Output {
         return best
     }
 
+    /// Pushing past a side of the current display lands on the display beyond it, at the same
+    /// relative height (or width), like moving between monitors on a console's multi-screen setup.
+    private func cross(from here: CGRect, toward p: CGPoint, rects: [CGRect]) -> CGPoint? {
+        let others = rects.filter { $0 != here }
+        func relY(_ r: CGRect) -> CGFloat { r.minY + (min(max(p.y, here.minY), here.maxY - 1) - here.minY) / here.height * r.height }
+        func relX(_ r: CGRect) -> CGFloat { r.minX + (min(max(p.x, here.minX), here.maxX - 1) - here.minX) / here.width * r.width }
+        func overlaps(_ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat) -> CGFloat { min(b, d) - max(a, c) }
+        if p.x >= here.maxX || p.x < here.minX {
+            let right = p.x >= here.maxX
+            let side = others.filter { right ? $0.minX >= here.maxX - 1 : $0.maxX <= here.minX + 1 }
+            // Nearest display on that side, preferring the one that shares the most of this edge
+            guard let r = side.min(by: {
+                let ga = right ? $0.minX - here.maxX : here.minX - $0.maxX
+                let gb = right ? $1.minX - here.maxX : here.minX - $1.maxX
+                if abs(ga - gb) > 1 { return ga < gb }
+                return overlaps($0.minY, $0.maxY, here.minY, here.maxY) > overlaps($1.minY, $1.maxY, here.minY, here.maxY)
+            }) else { return nil }
+            let y = r.contains(CGPoint(x: r.midX, y: p.y)) ? p.y : relY(r)
+            return CGPoint(x: right ? r.minX : r.maxX - 1, y: min(max(y, r.minY), r.maxY - 1))
+        }
+        if p.y >= here.maxY || p.y < here.minY {
+            let down = p.y >= here.maxY
+            let side = others.filter { down ? $0.minY >= here.maxY - 1 : $0.maxY <= here.minY + 1 }
+            guard let r = side.min(by: {
+                let ga = down ? $0.minY - here.maxY : here.minY - $0.maxY
+                let gb = down ? $1.minY - here.maxY : here.minY - $1.maxY
+                if abs(ga - gb) > 1 { return ga < gb }
+                return overlaps($0.minX, $0.maxX, here.minX, here.maxX) > overlaps($1.minX, $1.maxX, here.minX, here.maxX)
+            }) else { return nil }
+            let x = r.contains(CGPoint(x: p.x, y: r.midY)) ? p.x : relX(r)
+            return CGPoint(x: min(max(x, r.minX), r.maxX - 1), y: down ? r.minY : r.maxY - 1)
+        }
+        return nil
+    }
+
+    /// For the Mac's own mouse or trackpad: when it's pushing against a side with no display directly
+    /// next to it, where it should jump to instead (nil to leave it alone)
+    func crossTarget(at loc: CGPoint, dx: CGFloat, dy: CGFloat) -> CGPoint? {
+        guard crossAnyEdge, dx != 0 || dy != 0 else { return nil }
+        let rects = Self.displayRects()
+        guard rects.count > 1, let here = rects.first(where: { $0.contains(loc) }) else { return nil }
+        let push = CGPoint(x: loc.x + (dx > 0 ? 2 : dx < 0 ? -2 : 0), y: loc.y + (dy > 0 ? 2 : dy < 0 ? -2 : 0))
+        guard !rects.contains(where: { $0.contains(push) }) else { return nil }
+        // Only when it's actually up against the edge
+        let atEdge = (dx > 0 && loc.x >= here.maxX - 1.5) || (dx < 0 && loc.x <= here.minX + 0.5)
+            || (dy > 0 && loc.y >= here.maxY - 1.5) || (dy < 0 && loc.y <= here.minY + 0.5)
+        guard atEdge else { return nil }
+        return cross(from: here, toward: push, rects: rects)
+    }
+
     func movePointer(dx: CGFloat, dy: CGFloat) {
         remainder.x += dx
         remainder.y += dy
@@ -48,13 +110,14 @@ final class Output {
         remainder.x -= ix
         remainder.y -= iy
         let current = Self.pointerLocation()
-        let target = clamp(CGPoint(x: current.x + ix, y: current.y + iy))
+        let target = clamp(CGPoint(x: current.x + ix, y: current.y + iy), from: current)
         let type: CGEventType = leftDown ? .leftMouseDragged : .mouseMoved
         guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: target,
                               mouseButton: .left) else { return }
         e.setIntegerValueField(.mouseEventDeltaX, value: Int64(ix))
         e.setIntegerValueField(.mouseEventDeltaY, value: Int64(iy))
         if leftDown { e.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount)) }
+        e.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
         e.post(tap: .cghidEventTap)
         lastPointerPost = Date()
     }

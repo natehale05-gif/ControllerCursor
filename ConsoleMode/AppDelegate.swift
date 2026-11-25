@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         appliedHintsMode = settings.data.hintsMode
         replaceControllerCursor()
         allowBackgroundCursorHiding()
+        watchMouseEdges()
         keyboard.onStateChange = { [weak self] in
             self?.updateCursorVisibility()
             self?.refreshHints()
@@ -131,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     /// Every setting takes effect right away
     private func settingsChanged() {
         let d = settings.data
+        out.crossAnyEdge = d.crossAnyEdge
         // Screen size: switch now if the controller is in use
         if appliedScreenScale != d.screenScale {
             appliedScreenScale = d.screenScale
@@ -276,6 +278,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     }
 
     private var pointerByDisplay: [CGDirectDisplayID: CGPoint] = [:]
+    private var edgeMonitor: Any?
+    private var lastEdgeJump = Date.distantPast
+
+    /// The Mac's mouse and trackpad can cross to another display anywhere along a side, too
+    private func watchMouseEdges() {
+        edgeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] e in
+            guard let self, e.cgEvent?.getIntegerValueField(.eventSourceUserData) != Output.eventTag,
+                  Date().timeIntervalSince(self.lastEdgeJump) > 0.25 else { return }
+            let loc = Output.pointerLocation()
+            guard let dest = self.out.crossTarget(at: loc, dx: e.deltaX, dy: e.deltaY) else { return }
+            self.lastEdgeJump = Date()
+            CGWarpMouseCursorPosition(dest)
+            CGAssociateMouseAndMouseCursorPosition(1)
+        }
+    }
 
     func showMessage(_ text: String) {
         toast.show(text, symbol: "exclamationmark.bubble.fill", tint: .systemOrange, duration: 4)

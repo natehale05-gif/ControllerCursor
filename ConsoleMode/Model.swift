@@ -425,6 +425,8 @@ struct SettingsData: Codable {
     var swipeTyping = true
     var largeSettingsWithController = true
     var autoUpdate = true
+    /// Let the pointer cross to a neighbouring display anywhere along the shared side
+    var crossAnyEdge = true
     var layoutVersion = 4
     var lightRed = 0.0, lightGreen = 0.35, lightBlue = 1.0
 
@@ -471,6 +473,7 @@ struct SettingsData: Codable {
         swipeTyping = (try? c.decode(Bool.self, forKey: .swipeTyping)) ?? d.swipeTyping
         largeSettingsWithController = (try? c.decode(Bool.self, forKey: .largeSettingsWithController)) ?? d.largeSettingsWithController
         autoUpdate = (try? c.decode(Bool.self, forKey: .autoUpdate)) ?? d.autoUpdate
+        crossAnyEdge = (try? c.decode(Bool.self, forKey: .crossAnyEdge)) ?? d.crossAnyEdge
         layoutVersion = (try? c.decode(Int.self, forKey: .layoutVersion)) ?? 1
         if layoutVersion < 2 { Defaults.upgradeToV2(&profiles); layoutVersion = 2 }
         if layoutVersion < 3 { Defaults.upgradeToV3(&profiles); layoutVersion = 3 }
