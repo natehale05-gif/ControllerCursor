@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     private let hints = HintsBar()
     private let toast = Toast()
     let updater = Updater()
+    private let wheel = QuickWheel()
+    private let controlCenter = ControlCenter()
+    private var wheelShowWork: DispatchWorkItem?
     private var lowBatteryWarned = false
 
     private var statusItem: NSStatusItem!
@@ -59,7 +62,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         buildMenuBar()
 
         controllers.delegate = self
+        controlCenter.perform = { [weak self] kind in self?.controllers.perform(Action(kind: kind), phase: .tap) }
+        controlCenter.openSettings = { [weak self] in self?.openSettings() }
+        controlCenter.controllerBatteryLevel = { [weak self] in
+            guard let self, let b = self.controllers.batteryLevel else { return nil }
+            return (b, self.controllers.charging)
+        }
+        controlCenter.onClose = { [weak self] in self?.updateCursorVisibility(); self?.refreshHints() }
         controllers.start()
+        settings.startCloudSync()
 
         voice.onUpdate = { [weak self] text in self?.voiceCaption.update(text) }
         voice.shouldType = { [weak self] in !(self?.controllers.paused ?? false) }
@@ -138,6 +149,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     private func settingsChanged() {
         let d = settings.data
         out.crossAnyEdge = d.crossAnyEdge
+        controllers.applyTriggers()
+        controllers.applyGyro()
         // Screen size: switch now if the controller is in use
         if appliedScreenScale != d.screenScale {
             appliedScreenScale = d.screenScale
@@ -165,7 +178,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         rebuildMenu()
     }
 
+    // MARK: Media mode
+
+    private static let browsers: Set<String> = [
+        "com.apple.Safari", "com.google.Chrome", "com.brave.Browser", "company.thebrowser.Browser",
+        "org.mozilla.firefox", "com.microsoft.edgemac", "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
+        "com.kagi.kagimacOS", "app.zen-browser.zen",
+    ]
+    private static let videoSites = ["YouTube", "Netflix", "Disney+", "Prime Video", "Hulu", "HBO Max", " Max",
+                                     "Twitch", "Vimeo", "Apple TV", "Peacock", "Paramount+", "Crunchyroll", "Plex"]
+
+    /// Watching YouTube, Netflix and the like in a browser switches to the Media buttons
+    private func updateMediaSite() {
+        var watching = false
+        if settings.data.mediaMode, let app = NSWorkspace.shared.frontmostApplication,
+           let id = app.bundleIdentifier, Self.browsers.contains(id) {
+            let el = AXUIElementCreateApplication(app.processIdentifier)
+            var win: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, kAXFocusedWindowAttribute as CFString, &win) == .success, let win,
+               CFGetTypeID(win) == AXUIElementGetTypeID() {
+                var title: CFTypeRef?
+                AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &title)
+                if let t = title as? String { watching = Self.videoSites.contains { t.contains($0) } }
+            }
+        }
+        guard watching != settings.mediaSiteInFront else { return }
+        settings.mediaSiteInFront = watching
+        controllers.applyGestureStates()
+        if watching, controllerMode { toast.show("Media controls", symbol: "play.rectangle.fill", tint: .systemRed, duration: 1.6) }
+        refreshHints()
+    }
+
     private func refreshStatus() {
+        updateMediaSite()
         status.controllerName = controllers.controller == nil ? "No controller" : controllers.name
         status.connected = controllers.controller != nil
         status.battery = controllers.batteryLevel
@@ -208,6 +253,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         status.pausedForGame = gameName
         if paused {
             keyboard.hide()
+            if controlCenter.isVisible { controlCenter.hide() }
+            _ = wheel.hide()
             voice.stop()
             hints.hide()
             setControllerMode(false)
@@ -222,10 +269,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     func controllerActivity() {
         lastControllerActivity = Date()
+        if settings.data.keepAwake { SystemControls.declareUserActivity() }
         setControllerMode(true)
     }
 
     func controllerChanged() { refreshStatus() }
+
+    func controllerTookOver(name: String) {
+        toast.show("\(name) is in control", symbol: "gamecontroller.fill", tint: .systemBlue, duration: 1.8)
+        refreshStatus()
+    }
+
+    // MARK: Quick Menu wheel
+
+    func wheelAim(x: Float, y: Float) {
+        if !wheel.isVisible, hypot(x, y) > 0.4 { showWheel() }
+        if wheel.aim(x: x, y: y) { controllers.rumble(0.15) }
+    }
+
+    private func showWheel() {
+        wheelShowWork?.cancel()
+        guard !wheel.isVisible, controllerMode else { return }
+        wheel.show(settings.data.wheel, scale: max(0.8, displayScaler.pointRatio))
+    }
+
+    func quickMenuReleased() {
+        wheelShowWork?.cancel()
+        if let picked = wheel.hide() { controllers.perform(Action(kind: picked), phase: .tap) }
+    }
+
+    // MARK: Control Center
+
+    func openControlCenter(power: Bool) {
+        if keyboard.isVisible { keyboard.hide() }
+        controlCenter.toggle(powerRow: power)
+        controllers.rumble(0.3)
+        updateCursorVisibility()
+        refreshHints()
+    }
+
+    var overlayBlocksSticks: Bool { controlCenter.isVisible || wheel.isVisible }
 
     func controllerConnected(name: String) {
         var text = "\(name) connected"
@@ -252,7 +335,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         }
     }
 
-    func buttonsChanged(quickMenu: Bool) { refreshHints(quickMenu: quickMenu) }
+    func buttonsChanged(quickMenu: Bool) {
+        refreshHints(quickMenu: quickMenu)
+        // Holding the Quick Menu for a moment brings up the wheel
+        if quickMenu, !wheel.isVisible, wheelShowWork == nil || wheelShowWork!.isCancelled {
+            let w = DispatchWorkItem { [weak self] in self?.showWheel() }
+            wheelShowWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+        } else if !quickMenu {
+            wheelShowWork?.cancel()
+        }
+    }
 
     /// Jump the pointer to the next (or previous) display, left to right, back where it last was there
     func switchDisplay(forward: Bool) {
@@ -303,13 +396,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         toast.show(text, symbol: "exclamationmark.bubble.fill", tint: .systemOrange, duration: 4)
     }
 
-    func keyboardTouch(_ point: CGPoint?) -> Bool { keyboard.touch(point) }
+    func keyboardTouch(_ point: CGPoint?) -> Bool { keyboard.isVisible && keyboard.touch(point) }
 
     // MARK: Button hints
 
     private func refreshHints(quickMenu: Bool = false) {
         let mode = settings.data.hintsMode
-        guard mode != .off, controllerMode, !controllers.paused else { hints.hide(); return }
+        guard mode != .off, controllerMode, !controllers.paused, !controlCenter.isVisible else { hints.hide(); return }
         let style = settings.effectiveProfile.style
         func g(_ b: PadButton) -> (String, NSColor) {
             if style == .xbox {
@@ -367,7 +460,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     /// The stick or touchpad moved the pointer: aim with the circle again instead of the D-pad highlight
     func pointerMovedByController() { keyboard.clearFocus() }
 
-    var keyboardVisible: Bool { keyboard.isVisible }
+    /// The keyboard or Control Center is open, so buttons and the left stick drive it
+    var keyboardVisible: Bool { keyboard.isVisible || controlCenter.isVisible }
 
     func toggleKeyboard() {
         keyboard.keySize = CGFloat(settings.data.keyboardKeySize)
@@ -377,6 +471,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     /// PS5 keyboard controls while the keyboard is open
     func keyboardButton(_ button: PadButton, down: Bool) -> Bool {
+        if controlCenter.isVisible {
+            if down, controlCenter.handle(button) { controllers.rumble(0.25) }
+            return true
+        }
         // ✕ types the highlighted key after D-pad navigation; otherwise it clicks under the circle
         if button == .cross {
             guard down else { return true }
@@ -471,7 +569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
     /// While you type with the D-pad, neither the circle nor the arrow is shown
     private func updateCursorVisibility() {
         // Only with the controller: opened from the menu with a mouse, keep the arrow
-        let typing = keyboard.isVisible && keyboard.focusActive && controllerMode
+        let typing = (keyboard.isVisible && keyboard.focusActive || controlCenter.isVisible) && controllerMode
         if typing {
             ringPanel.orderOut(nil)
             if !arrowHidden {

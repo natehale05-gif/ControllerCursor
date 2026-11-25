@@ -8,7 +8,7 @@ for arch in arm64 x86_64; do
   xcrun swiftc -O -swift-version 5 -target "$arch-apple-macos13.0" \
     -framework AppKit -framework SwiftUI -framework GameController -framework CoreHaptics \
     -framework ServiceManagement -framework Combine -framework Speech -framework AVFoundation \
-    -framework ApplicationServices -framework Carbon -framework UniformTypeIdentifiers \
+    -framework ApplicationServices -framework Carbon -framework CoreWLAN -framework IOKit -framework UniformTypeIdentifiers \
     -o "build/ConsoleMode-$arch" ConsoleMode/*.swift
 done
 lipo -create build/ConsoleMode-arm64 build/ConsoleMode-x86_64 -output "$APP/Contents/MacOS/ConsoleMode"
@@ -25,8 +25,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.nate.consolemode</string>
   <key>CFBundleExecutable</key><string>ConsoleMode</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>3.4.2</string>
-  <key>CFBundleVersion</key><string>21</string>
+  <key>CFBundleShortVersionString</key><string>3.5</string>
+  <key>CFBundleVersion</key><string>22</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleIconFile</key><string>AppIcon</string>

@@ -125,6 +125,23 @@ struct GeneralPane: View {
                     }
             }
 
+            Section("Features") {
+                Toggle("Media controls for video", isOn: $settings.data.mediaMode)
+                Text("In the TV app, VLC, IINA, or a browser playing YouTube, Netflix, Disney+, Prime Video and the like, buttons switch to the Media profile: ✕ play/pause, D-pad seek and volume, □ captions, △ full screen. Change them in Buttons → Media.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Keep the Mac awake while using the controller", isOn: $settings.data.keepAwake)
+                Text("Stops the screen dimming mid-video, and wakes a dimmed or sleeping display when you pick up the controller.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Sync settings with iCloud Drive", isOn: SwiftUI.Binding(
+                    get: { settings.data.iCloudSync },
+                    set: { on in if on { settings.enableCloudSync() } else { settings.data.iCloudSync = false } }))
+                    .disabled(!AppSettings.iCloudAvailable && !settings.data.iCloudSync)
+                Text(AppSettings.iCloudAvailable
+                     ? "Shares buttons, profiles and settings with your other Macs through iCloud Drive → Console Mode."
+                     : "Turn on iCloud Drive in System Settings → your name → iCloud to sync settings between Macs.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Updates") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -258,6 +275,27 @@ struct ControllerPane: View {
                 }
             }
 
+            Section("Gyro Aiming") {
+                Picker("Gyro", selection: $settings.data.gyroMode) {
+                    ForEach(GyroMode.allCases) { Text($0.title).tag($0) }
+                }
+                Text(settings.data.gyroMode == .afterStick
+                     ? "Push the stick near what you want, then tilt the controller slightly to land exactly on it."
+                     : settings.data.gyroMode == .always ? "Tilting the controller always moves the pointer." : "The motion sensors are off.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if settings.data.gyroMode != .off {
+                    LabeledSlider(title: "Speed", value: $settings.data.gyroSpeed, low: "Slow", high: "Fast")
+                    Toggle("Reverse left and right", isOn: $settings.data.gyroInvertX)
+                    Toggle("Reverse up and down", isOn: $settings.data.gyroInvertY)
+                }
+            }
+
+            Section("Adaptive Triggers") {
+                Toggle("Trigger feel", isOn: $settings.data.adaptiveTriggers)
+                Text("R2 clicks like a button when it presses Return, and L2 pushes back gently while the Quick Menu is held. DualSense only; games use their own.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Feedback") {
                 Toggle("Rumble when you click", isOn: $settings.data.rumble)
                 Toggle("Rumble ticks while scrolling", isOn: $settings.data.scrollTicks)
@@ -306,6 +344,29 @@ struct ButtonsPane: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            if quickMenu {
+                Section {
+                    ForEach(0..<8, id: \.self) { i in
+                        Picker(Self.wheelNames[i], selection: wheelBinding(i)) {
+                            ForEach(ActionKind.groups, id: \.0) { group in
+                                Section(group.0) {
+                                    ForEach(group.1.filter { $0 != .voiceTyping }) { k in Text(k.title).tag(k) }
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Quick Menu Wheel")
+                } footer: {
+                    HStack {
+                        Text("Hold \(style.quickMenuName), point the right stick at a slice, then let go of \(style.quickMenuName).")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Restore Wheel") { settings.data.wheel = Defaults.wheel }
+                    }
+                }
+            }
+
             Section {
                 ForEach(buttons) { b in
                     ButtonRow(button: b, style: style, binding: bindingFor(b), showHold: !quickMenu)
@@ -320,6 +381,12 @@ struct ButtonsPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    static let wheelNames = ["Top", "Top Right", "Right", "Bottom Right", "Bottom", "Bottom Left", "Left", "Top Left"]
+
+    private func wheelBinding(_ i: Int) -> SwiftUI.Binding<ActionKind> {
+        SwiftUI.Binding(get: { settings.data.wheel[i] }, set: { settings.data.wheel[i] = $0 })
     }
 
     private func bindingFor(_ b: PadButton) -> SwiftUI.Binding<ButtonBinding> {
@@ -347,6 +414,8 @@ struct ButtonRow: View {
             }
             if binding.press.kind == .shortcut { ShortcutEditor(action: $binding.press) }
             if showHold && binding.hold.kind == .shortcut { ShortcutEditor(action: $binding.hold) }
+            if binding.press.kind == .runShortcut { ShortcutsAppPicker(action: $binding.press) }
+            if showHold && binding.hold.kind == .runShortcut { ShortcutsAppPicker(action: $binding.hold) }
         }
     }
 }
@@ -371,6 +440,31 @@ struct ActionPicker: View {
             Text("Custom Shortcut…").tag(ActionKind.shortcut)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Picks a shortcut from Apple's Shortcuts app
+struct ShortcutsAppPicker: View {
+    @SwiftUI.Binding var action: Action
+    @State private var names: [String] = []
+    @State private var loaded = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Spacer().frame(width: 170)
+            Picker("Shortcut", selection: SwiftUI.Binding(get: { action.name ?? "" }, set: { action.name = $0 })) {
+                Text("Choose…").tag("")
+                ForEach(names, id: \.self) { Text($0).tag($0) }
+                if let n = action.name, !n.isEmpty, !names.contains(n) { Text(n).tag(n) }
+            }
+            .frame(maxWidth: 320)
+            if !loaded { ProgressView().controlSize(.small) }
+            else if names.isEmpty { Text("No shortcuts found in the Shortcuts app").font(.caption).foregroundStyle(.secondary) }
+        }
+        .font(.callout)
+        .onAppear {
+            SystemControls.shortcutNames { names = $0; loaded = true }
+        }
     }
 }
 
@@ -419,6 +513,9 @@ struct PointerPane: View {
             Section("Touchpad") {
                 LabeledSlider(title: "Speed", value: $settings.data.touchpadSpeed, low: "Slow", high: "Fast")
                 Text("Tap or press to click. Press with two fingers for the options menu.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Two-finger gestures", isOn: $settings.data.touchpadGestures)
+                Text("Slide two fingers to scroll. Flick two fingers left or right to change desktops, up for Mission Control, down for the app's windows.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Circle") {

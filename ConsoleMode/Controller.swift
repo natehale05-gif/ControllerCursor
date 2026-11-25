@@ -21,6 +21,13 @@ protocol ControllerDelegate: AnyObject {
     /// Swipe typing: the touchpad position while the keyboard is open (nil when lifted). Return true if used.
     func keyboardTouch(_ point: CGPoint?) -> Bool
     func controllerConnected(name: String)
+    /// Another controller was used, so it's now the one in control
+    func controllerTookOver(name: String)
+    /// Quick Menu wheel: right stick while L2 is held, and L2 let go
+    func wheelAim(x: Float, y: Float)
+    func quickMenuReleased()
+    func openControlCenter(power: Bool)
+    var overlayBlocksSticks: Bool { get }
 }
 
 /// Live controller state for the Test Controller page
@@ -48,6 +55,7 @@ final class ControllerManager {
             guard paused != oldValue else { return }
             if paused { releaseAll() }
             applyGestureStates()
+            applyTriggers()
         }
     }
     private var scrollAccum: CGFloat = 0
@@ -107,6 +115,9 @@ final class ControllerManager {
         settings.autoSelect(for: style)
         applyGestureStates()
         applyLight()
+        applyTriggers()
+        for other in GCController.controllers() { other.playerIndex = other === c ? .index1 : .index2 }
+        if let motion = c.motion, motion.sensorsRequireManualActivation { motion.sensorsActive = settings.data.gyroMode != .off }
         if let engine = c.haptics?.createEngine(withLocality: .default) {
             engine.isAutoShutdownEnabled = true
             hapticEngine = engine
@@ -129,6 +140,25 @@ final class ControllerManager {
         }
         pad.buttonHome?.preferredSystemGestureState = state(.ps)
         pad.buttonOptions?.preferredSystemGestureState = state(.create)
+    }
+
+    /// DualSense adaptive triggers: R2 clicks like a button, L2 pushes back gently while the Quick Menu is held.
+    /// Off while a game is in front (games set their own).
+    func applyTriggers() {
+        guard let ds = controller?.extendedGamepad as? GCDualSenseGamepad else { return }
+        if settings.data.adaptiveTriggers, settings.data.enabled, !paused {
+            ds.rightTrigger.setModeWeaponWithStartPosition(0.3, endPosition: 0.5, resistiveStrength: 0.55)
+            ds.leftTrigger.setModeFeedbackWithStartPosition(0.2, resistiveStrength: 0.3)
+        } else {
+            ds.rightTrigger.setModeOff()
+            ds.leftTrigger.setModeOff()
+        }
+    }
+
+    /// Turns the motion sensors on or off to match the gyro setting
+    func applyGyro() {
+        guard let motion = controller?.motion, motion.sensorsRequireManualActivation else { return }
+        motion.sensorsActive = settings.data.gyroMode != .off
     }
 
     /// PlayStation or Xbox, from the kind of controller connected
@@ -218,7 +248,58 @@ final class ControllerManager {
 
         readButtons(pad, now: now)
         moveWithSticks(pad, dt: dt)
+        readGyro(dt: dt, now: now)
         readTouchpad(pad, now: now)
+        liveCounter2 += 1
+        if liveCounter2 % 6 == 0 { checkOtherControllers() }
+    }
+
+    private var liveCounter2 = 0
+
+    /// Whoever picks up another connected controller and presses something takes over
+    private func checkOtherControllers() {
+        guard down.isEmpty else { return }
+        for c in GCController.controllers() where c !== controller {
+            guard let p = c.extendedGamepad else { continue }
+            let pressed = [p.buttonA, p.buttonB, p.buttonX, p.buttonY, p.leftShoulder, p.rightShoulder, p.buttonMenu]
+                .contains { $0.isPressed }
+            let moved = hypot(p.leftThumbstick.xAxis.value, p.leftThumbstick.yAxis.value) > 0.6
+            guard pressed || moved else { continue }
+            releaseAll()
+            attach(c)
+            // Don't treat the button that took over as a press
+            for b in PadButton.allCases where isDown(b, p) {
+                down[b] = Press(start: Date(), binding: ButtonBinding(press: .none), handledByKeyboard: true)
+            }
+            delegate?.controllerTookOver(name: c.vendorName ?? "Controller")
+            return
+        }
+    }
+
+    // MARK: Gyro
+
+    private var lastStickUse = Date.distantPast
+    private var gyroRemainder = CGPoint.zero
+
+    /// Tilt the controller for fine aiming, like gyro aiming on a PS5
+    private func readGyro(dt: TimeInterval, now: Date) {
+        let d = settings.data
+        guard d.gyroMode != .off, delegate?.overlayBlocksSticks != true,
+              let motion = controller?.motion, motion.hasRotationRate else { return }
+        if d.gyroMode == .afterStick, now.timeIntervalSince(lastStickUse) > 1.2 { return }
+        let r = motion.rotationRate
+        // Ignore the slight shake of a hand holding still
+        func dz(_ v: Double) -> Double { abs(v) < 0.035 ? 0 : v }
+        let yaw = dz(r.y), pitch = dz(r.x)
+        guard yaw != 0 || pitch != 0 else { return }
+        let k = 500 + d.gyroSpeed * 2500
+        let dx = CGFloat(-yaw * k * dt) * (d.gyroInvertX ? -1 : 1)
+        let dy = CGFloat(-pitch * k * dt) * (d.gyroInvertY ? -1 : 1)
+        out.movePointer(dx: dx, dy: dy)
+        if abs(dx) + abs(dy) > 0.5 {
+            delegate?.pointerMovedByController()
+            if d.gyroMode == .afterStick { lastStickUse = now }   // keep fine-tuning while you're aiming
+        }
     }
 
     private func publishLive(_ pad: GCExtendedGamepad) {
@@ -336,7 +417,10 @@ final class ControllerManager {
     }
 
     private func buttonUp(_ b: PadButton, _ p: Press) {
-        if b == .l2 { delegate?.buttonsChanged(quickMenu: false) }
+        if b == .l2 {
+            if !p.handledByKeyboard { delegate?.quickMenuReleased() }
+            delegate?.buttonsChanged(quickMenu: false)
+        }
         // Voice typing runs for as long as the button is held
         if p.holdFired, p.binding.hold.kind == .voiceTyping { delegate?.voiceTyping(false) }
         if p.handledByKeyboard {
@@ -397,6 +481,32 @@ final class ControllerManager {
             }
         case .finder:
             if isStart { out.openApp(bundleID: "com.apple.finder") }
+        case .snapLeft, .snapRight, .snapFill, .snapCenter, .snapTopLeft, .snapTopRight, .snapBottomLeft, .snapBottomRight:
+            guard isStart else { return }
+            let spot: WindowSnapper.Spot
+            switch action.kind {
+            case .snapLeft: spot = .left
+            case .snapRight: spot = .right
+            case .snapFill: spot = .fill
+            case .snapCenter: spot = .center
+            case .snapTopLeft: spot = .topLeft
+            case .snapTopRight: spot = .topRight
+            case .snapBottomLeft: spot = .bottomLeft
+            default: spot = .bottomRight
+            }
+            if WindowSnapper.snap(spot) { rumble(0.3) }
+        case .windowNextDisplay:
+            if isStart, WindowSnapper.moveToNextDisplay() != nil { rumble(0.3) }
+        case .controlCenter:
+            if isStart { delegate?.openControlCenter(power: false) }
+        case .powerMenu:
+            if isStart { delegate?.openControlCenter(power: true) }
+        case .sleepMac:
+            if isStart { SystemControls.sleep() }
+        case .displaySleep:
+            if isStart { SystemControls.displaySleep() }
+        case .runShortcut:
+            if isStart, let name = action.name { SystemControls.runShortcut(name); rumble(0.3) }
         case .nextDisplay, .previousDisplay:
             if isStart { delegate?.switchDisplay(forward: action.kind == .nextDisplay) }
         case .siri:
@@ -448,6 +558,7 @@ final class ControllerManager {
     private func moveWithSticks(_ pad: GCExtendedGamepad, dt: TimeInterval) {
         let d = settings.data
         // Keyboard open: like a PS5, the left stick moves the highlighted key instead of a pointer
+        if hypot(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value) > 0.12 { lastStickUse = Date() }
         if delegate?.keyboardVisible == true {
             let x = pad.leftThumbstick.xAxis.value, y = pad.leftThumbstick.yAxis.value
             var dir: PadButton?
@@ -481,6 +592,12 @@ final class ControllerManager {
             out.movePointer(dx: vx * speed, dy: -vy * speed)
             delegate?.pointerMovedByController()
         }
+        // Quick Menu held: the right stick points at the wheel instead of scrolling
+        if quickMenuHeld, delegate?.keyboardVisible != true {
+            delegate?.wheelAim(x: pad.rightThumbstick.xAxis.value, y: pad.rightThumbstick.yAxis.value)
+            return
+        }
+        if delegate?.overlayBlocksSticks == true { return }
         // Right stick: scroll
         if let (vx, vy) = shaped(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value,
                                  deadzone: 0.15, exponent: 1.6) {
@@ -521,10 +638,59 @@ final class ControllerManager {
         return second.xAxis.value != 0 || second.yAxis.value != 0
     }
 
+    // Two-finger gestures
+    private var twoStart: Date?
+    private var twoOrigin = CGPoint.zero
+    private var twoLast = CGPoint.zero
+    private var ignoreUntilLift = false
+
+    /// Two fingers: scroll, or flick left/right for desktops and up/down for Mission Control / App Windows
+    private func readTwoFingers(_ a: CGPoint, _ b: CGPoint?, now: Date) -> Bool {
+        guard settings.data.touchpadGestures, delegate?.keyboardVisible != true else { return false }
+        if let b {
+            let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            if twoStart == nil {
+                twoStart = now; twoOrigin = mid; twoLast = mid
+                delegate?.controllerActivity()
+            } else if now.timeIntervalSince(twoStart!) > 0.12 {
+                let speed = CGFloat(800 + settings.data.scrollSpeed * 1600)
+                let sign: CGFloat = settings.data.invertScroll ? -1 : 1
+                out.scroll(dx: (mid.x - twoLast.x) * speed * sign, dy: -(mid.y - twoLast.y) * speed * sign)
+                delegate?.controllerActivity()
+            }
+            twoLast = mid
+            ignoreUntilLift = true
+            return true
+        }
+        guard let start = twoStart else { return false }
+        twoStart = nil
+        let dx = twoLast.x - twoOrigin.x, dy = twoLast.y - twoOrigin.y
+        if now.timeIntervalSince(start) < 0.4 {
+            if abs(dx) > 0.6, abs(dx) > abs(dy) * 1.5 {
+                perform(Action(kind: dx < 0 ? .nextDesktop : .previousDesktop), phase: .tap)   // like a trackpad
+            } else if abs(dy) > 0.5, abs(dy) > abs(dx) * 1.5 {
+                perform(Action(kind: dy > 0 ? .missionControl : .appWindows), phase: .tap)
+            }
+        }
+        return true
+    }
+
     private func readTouchpad(_ pad: GCExtendedGamepad, now: Date) {
-        guard let (primary, _) = touchpadPads(pad) else { return }
+        guard let (primary, secondary) = touchpadPads(pad) else { return }
         let x = CGFloat(primary.xAxis.value), y = CGFloat(primary.yAxis.value)
         let touching = x != 0 || y != 0
+        let sx = CGFloat(secondary.xAxis.value), sy = CGFloat(secondary.yAxis.value)
+        let second = (sx != 0 || sy != 0) ? CGPoint(x: sx, y: sy) : nil
+        if touching || second != nil {
+            if readTwoFingers(CGPoint(x: x, y: y), second, now: now), second != nil { touchLast = nil; return }
+        } else {
+            _ = readTwoFingers(.zero, nil, now: now)
+        }
+        // After a two-finger gesture, wait for every finger to lift before the touchpad moves the pointer again
+        if ignoreUntilLift {
+            if !touching && second == nil { ignoreUntilLift = false; touchLast = nil; touchClicked = false }
+            return
+        }
         // Keyboard open: the touchpad becomes the keyboard (tap a key, or swipe across letters)
         if delegate?.keyboardVisible == true, settings.data.swipeTyping {
             if touching {

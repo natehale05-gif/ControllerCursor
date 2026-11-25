@@ -113,6 +113,18 @@ struct Profile: Codable, Identifiable, Hashable {
     }
 }
 
+enum GyroMode: String, Codable, CaseIterable, Identifiable {
+    case off, afterStick, always
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .off: return "Off"
+        case .afterStick: return "Fine-tune after the stick"
+        case .always: return "Always"
+        }
+    }
+}
+
 enum HintsMode: String, Codable, CaseIterable, Identifiable {
     case autoHide, always, off
     var id: String { rawValue }
@@ -178,6 +190,10 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     // Navigation & typing
     case jumpUp, jumpDown, jumpLeft, jumpRight, voiceTyping, siri
     case previousDesktop, nextDesktop, previousDisplay, nextDisplay
+    case snapLeft, snapRight, snapFill, snapCenter, snapTopLeft, snapTopRight, snapBottomLeft, snapBottomRight
+    case windowNextDisplay
+    case controlCenter, powerMenu, lockScreen, sleepMac, displaySleep, runShortcut
+    case seekBack, seekForward, captions, videoFullScreen
     // Leave it to macOS (PS / Create buttons)
     case appleDefault
     // Custom
@@ -251,6 +267,25 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .nextDesktop: return "Next Desktop (Space on the right)"
         case .previousDisplay: return "Previous Display (move pointer)"
         case .nextDisplay: return "Next Display (move pointer)"
+        case .snapLeft: return "Window: Left Half"
+        case .snapRight: return "Window: Right Half"
+        case .snapFill: return "Window: Fill Screen"
+        case .snapCenter: return "Window: Center"
+        case .snapTopLeft: return "Window: Top Left"
+        case .snapTopRight: return "Window: Top Right"
+        case .snapBottomLeft: return "Window: Bottom Left"
+        case .snapBottomRight: return "Window: Bottom Right"
+        case .windowNextDisplay: return "Window: Move to Next Display"
+        case .controlCenter: return "Control Center"
+        case .powerMenu: return "Power (Lock, Sleep…)"
+        case .lockScreen: return "Lock Screen"
+        case .sleepMac: return "Sleep Mac"
+        case .displaySleep: return "Turn Display Off"
+        case .runShortcut: return "Run a Shortcut…"
+        case .seekBack: return "Video: Back (←)"
+        case .seekForward: return "Video: Forward (→)"
+        case .captions: return "Video: Captions (C)"
+        case .videoFullScreen: return "Video: Full Screen (F)"
         case .appleDefault: return "Apple Default"
         case .shortcut: return "Custom Shortcut…"
         }
@@ -262,6 +297,10 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         ("Console", [.keyboard, .voiceTyping, .siri, .appleDefault, .spotlight, .missionControl, .appWindows, .showDesktop, .appSwitcher,
                      .lastApp, .launchpad, .finder]),
         ("Displays & Desktops", [.nextDisplay, .previousDisplay, .nextDesktop, .previousDesktop]),
+        ("Windows", [.snapLeft, .snapRight, .snapFill, .snapCenter, .snapTopLeft, .snapTopRight,
+                     .snapBottomLeft, .snapBottomRight, .windowNextDisplay]),
+        ("System", [.controlCenter, .powerMenu, .lockScreen, .sleepMac, .displaySleep, .runShortcut]),
+        ("Video", [.seekBack, .seekForward, .captions, .videoFullScreen]),
         ("Keys", [.escape, .enter, .delete, .tab, .space, .arrowUp, .arrowDown, .arrowLeft, .arrowRight,
                   .pageUp, .pageDown]),
         ("Tabs & Windows", [.nextTab, .previousTab, .newTab, .reopenTab, .closeWindow, .quitApp, .fullScreen,
@@ -282,6 +321,11 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .missionControl: return k(126, ctrl: true)
         case .previousDesktop: return k(123, ctrl: true)
         case .nextDesktop: return k(124, ctrl: true)
+        case .lockScreen: return k(12, cmd: true, ctrl: true)       // ⌃⌘Q
+        case .seekBack: return k(123)
+        case .seekForward: return k(124)
+        case .captions: return k(8)                                  // C
+        case .videoFullScreen: return k(3)                           // F
         case .appWindows: return k(125, ctrl: true)
         case .showDesktop: return k(103)            // F11
         case .appSwitcher, .lastApp: return k(48, cmd: true)
@@ -326,7 +370,49 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     var repeats: Bool {
         [.delete, .arrowUp, .arrowDown, .arrowLeft, .arrowRight, .pageUp, .pageDown,
          .volumeUp, .volumeDown, .brightnessUp, .brightnessDown, .zoomIn, .zoomOut,
-         .jumpUp, .jumpDown, .jumpLeft, .jumpRight].contains(self)
+         .jumpUp, .jumpDown, .jumpLeft, .jumpRight, .seekBack, .seekForward].contains(self)
+    }
+
+    /// Icon for the Quick Menu wheel and Control Center
+    var symbol: String {
+        switch self {
+        case .missionControl: return "rectangle.3.group"
+        case .previousDesktop: return "arrow.left.square"
+        case .nextDesktop: return "arrow.right.square"
+        case .nextDisplay, .previousDisplay: return "display.2"
+        case .snapLeft: return "rectangle.lefthalf.filled"
+        case .snapRight: return "rectangle.righthalf.filled"
+        case .snapFill: return "rectangle.fill"
+        case .snapCenter: return "rectangle.center.inset.filled"
+        case .snapTopLeft: return "rectangle.inset.topleft.filled"
+        case .snapTopRight: return "rectangle.inset.topright.filled"
+        case .snapBottomLeft: return "rectangle.inset.bottomleft.filled"
+        case .snapBottomRight: return "rectangle.inset.bottomright.filled"
+        case .windowNextDisplay: return "macwindow.on.rectangle"
+        case .controlCenter: return "switch.2"
+        case .powerMenu: return "power"
+        case .lockScreen: return "lock.fill"
+        case .sleepMac: return "moon.fill"
+        case .displaySleep: return "display"
+        case .runShortcut: return "square.2.layers.3d"
+        case .keyboard: return "keyboard"
+        case .spotlight: return "magnifyingglass"
+        case .voiceTyping: return "mic.fill"
+        case .siri: return "waveform"
+        case .appSwitcher, .lastApp: return "square.on.square"
+        case .launchpad: return "square.grid.3x3.fill"
+        case .finder: return "folder.fill"
+        case .showDesktop: return "menubar.dock.rectangle"
+        case .screenshot, .captureMenu: return "camera.viewfinder"
+        case .playPause: return "playpause.fill"
+        case .volumeUp: return "speaker.wave.3.fill"
+        case .volumeDown: return "speaker.wave.1.fill"
+        case .fullScreen, .videoFullScreen: return "arrow.up.left.and.arrow.down.right"
+        case .closeWindow: return "xmark.square"
+        case .quitApp: return "xmark.app"
+        case .newTab: return "plus.square.on.square"
+        default: return "circle.grid.cross"
+        }
     }
 
     /// One or two words for the on-screen button hints
@@ -346,6 +432,23 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .nextDesktop: return "Desktop →"
         case .previousDisplay: return "Previous Display"
         case .nextDisplay: return "Next Display"
+        case .snapLeft: return "Left Half"
+        case .snapRight: return "Right Half"
+        case .snapFill: return "Fill"
+        case .snapCenter: return "Center"
+        case .snapTopLeft: return "Top Left"
+        case .snapTopRight: return "Top Right"
+        case .snapBottomLeft: return "Bottom Left"
+        case .snapBottomRight: return "Bottom Right"
+        case .windowNextDisplay: return "Window → Display"
+        case .controlCenter: return "Control Center"
+        case .powerMenu: return "Power"
+        case .runShortcut: return "Shortcut"
+        case .seekBack: return "Back 10s"
+        case .seekForward: return "Forward 10s"
+        case .captions: return "Captions"
+        case .videoFullScreen: return "Full Screen"
+        case .playPause: return "Play / Pause"
         default:
             return title.components(separatedBy: " (").first ?? title
         }
@@ -355,15 +458,19 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
 struct Action: Codable, Hashable {
     var kind: ActionKind
     var custom: KeyShortcut?
+    /// For "Run a Shortcut": the shortcut's name in Apple's Shortcuts app
+    var name: String?
 
     static let none = Action(kind: .none)
-    init(kind: ActionKind, custom: KeyShortcut? = nil) {
+    init(kind: ActionKind, custom: KeyShortcut? = nil, name: String? = nil) {
         self.kind = kind
         self.custom = custom
+        self.name = name
     }
 
     var title: String {
         if kind == .shortcut, let c = custom { return "Shortcut " + KeyNames.describe(c) }
+        if kind == .runShortcut, let n = name, !n.isEmpty { return n }
         return kind.title
     }
 }
@@ -399,9 +506,9 @@ enum KeyNames {
 
 // MARK: - Settings (saved to disk)
 
-struct SettingsData: Codable {
+struct SettingsData: Codable, Equatable {
     var enabled = true
-    var profiles: [Profile] = [Defaults.playstationProfile, Defaults.xboxProfile]
+    var profiles: [Profile] = [Defaults.playstationProfile, Defaults.xboxProfile, Defaults.mediaProfile]
     var activeProfileID: UUID = Defaults.playstationProfile.id
     var autoSwitchProfile = true
     var lightMode: LightMode = .solid
@@ -427,7 +534,18 @@ struct SettingsData: Codable {
     var autoUpdate = true
     /// Let the pointer cross to a neighbouring display anywhere along the shared side
     var crossAnyEdge = true
-    var layoutVersion = 4
+    var gyroMode: GyroMode = .afterStick
+    var gyroSpeed = 0.5
+    var gyroInvertX = false
+    var gyroInvertY = false
+    var adaptiveTriggers = true
+    var touchpadGestures = true
+    var mediaMode = true
+    var iCloudSync = false
+    var keepAwake = true
+    /// Quick Menu wheel, clockwise from the top
+    var wheel: [ActionKind] = Defaults.wheel
+    var layoutVersion = 5
     var lightRed = 0.0, lightGreen = 0.35, lightBlue = 1.0
 
     init() {}
@@ -474,10 +592,21 @@ struct SettingsData: Codable {
         largeSettingsWithController = (try? c.decode(Bool.self, forKey: .largeSettingsWithController)) ?? d.largeSettingsWithController
         autoUpdate = (try? c.decode(Bool.self, forKey: .autoUpdate)) ?? d.autoUpdate
         crossAnyEdge = (try? c.decode(Bool.self, forKey: .crossAnyEdge)) ?? d.crossAnyEdge
+        gyroMode = (try? c.decode(GyroMode.self, forKey: .gyroMode)) ?? d.gyroMode
+        gyroSpeed = (try? c.decode(Double.self, forKey: .gyroSpeed)) ?? d.gyroSpeed
+        gyroInvertX = (try? c.decode(Bool.self, forKey: .gyroInvertX)) ?? d.gyroInvertX
+        gyroInvertY = (try? c.decode(Bool.self, forKey: .gyroInvertY)) ?? d.gyroInvertY
+        adaptiveTriggers = (try? c.decode(Bool.self, forKey: .adaptiveTriggers)) ?? d.adaptiveTriggers
+        touchpadGestures = (try? c.decode(Bool.self, forKey: .touchpadGestures)) ?? d.touchpadGestures
+        mediaMode = (try? c.decode(Bool.self, forKey: .mediaMode)) ?? d.mediaMode
+        iCloudSync = (try? c.decode(Bool.self, forKey: .iCloudSync)) ?? d.iCloudSync
+        keepAwake = (try? c.decode(Bool.self, forKey: .keepAwake)) ?? d.keepAwake
+        if let w = try? c.decode([ActionKind].self, forKey: .wheel), w.count == 8 { wheel = w }
         layoutVersion = (try? c.decode(Int.self, forKey: .layoutVersion)) ?? 1
         if layoutVersion < 2 { Defaults.upgradeToV2(&profiles); layoutVersion = 2 }
         if layoutVersion < 3 { Defaults.upgradeToV3(&profiles); layoutVersion = 3 }
         if layoutVersion < 4 { Defaults.upgradeToV4(&profiles); layoutVersion = 4 }
+        if layoutVersion < 5 { Defaults.upgradeToV5(&profiles); layoutVersion = 5 }
     }
 }
 
@@ -544,6 +673,37 @@ enum Defaults {
         }
     }
 
+    /// 3.5: the PS / Xbox button opens Control Center (hold for Power), and the Media profile exists
+    static func upgradeToV5(_ profiles: inout [Profile]) {
+        for i in profiles.indices {
+            if let ps = profiles[i].base[.ps], ps == b(.appleDefault) { profiles[i].base[.ps] = b(.controlCenter, hold: .powerMenu) }
+        }
+        if !profiles.contains(where: { $0.id == mediaProfile.id }) { profiles.append(mediaProfile) }
+    }
+
+    static let wheel: [ActionKind] = [.missionControl, .nextDesktop, .snapRight, .windowNextDisplay,
+                                      .snapFill, .controlCenter, .snapLeft, .previousDesktop]
+
+    /// Video apps and sites: play/pause, seek, captions, full screen
+    static let mediaProfile: Profile = {
+        var m = base
+        m[.cross] = b(.playPause)
+        m[.circle] = b(.escape, hold: .closeWindow)
+        m[.square] = b(.captions)
+        m[.triangle] = b(.videoFullScreen, hold: .voiceTyping)
+        m[.left] = b(.seekBack)
+        m[.right] = b(.seekForward)
+        m[.up] = b(.volumeUp)
+        m[.down] = b(.volumeDown)
+        m[.l1] = b(.previousTrack)
+        m[.r1] = b(.nextTrack)
+        m[.r2] = b(.leftClick)
+        return Profile(id: UUID(uuidString: "5A1C0DE0-0000-4000-8000-000000000003")!, name: "Media", style: .playstation,
+                       base: m, quickMenu: quickMenu,
+                       apps: ["com.apple.TV", "com.apple.QuickTimePlayerX", "org.videolan.vlc", "com.colliderli.iina",
+                              "com.plexapp.plexmediaplayer", "com.firecore.infuse", "tv.plex.desktop"])
+    }()
+
     static func b(_ k: ActionKind, hold: ActionKind = .none) -> ButtonBinding {
         ButtonBinding(press: Action(kind: k), hold: Action(kind: hold))
     }
@@ -561,7 +721,7 @@ enum Defaults {
         .up: b(.jumpUp), .down: b(.jumpDown), .left: b(.jumpLeft), .right: b(.jumpRight),
         .options: b(.rightClick, hold: .siri),
         .create: b(.appleDefault),          // macOS takes the screenshot / clip
-        .ps: b(.appleDefault),              // macOS game overlay / Apps
+        .ps: b(.controlCenter, hold: .powerMenu),
         .l3: b(.finder),
         .r3: b(.delete),
         .touchpad: b(.leftClick),
@@ -619,7 +779,65 @@ final class AppSettings: ObservableObject {
     private func save() {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let raw = try? enc.encode(data) { try? raw.write(to: Self.fileURL, options: .atomic) }
+        guard let raw = try? enc.encode(data) else { return }
+        try? raw.write(to: Self.fileURL, options: .atomic)
+        if data.iCloudSync, !applyingCloud, let cloud = Self.cloudURL {
+            try? FileManager.default.createDirectory(at: cloud.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? raw.write(to: cloud, options: .atomic)
+            lastCloudDate = (try? cloud.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        }
+    }
+
+    // MARK: iCloud Drive sync
+
+    /// iCloud Drive/Console Mode/settings.json — shared by every Mac signed in to the same iCloud account
+    static var cloudURL: URL? {
+        let drive = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: drive.path) else { return nil }
+        return drive.appendingPathComponent("Console Mode/settings.json")
+    }
+    static var iCloudAvailable: Bool { cloudURL != nil }
+
+    private var lastCloudDate: Date?
+    private var applyingCloud = false
+    private var cloudTimer: Timer?
+
+    /// Starts watching iCloud Drive for settings saved on another Mac
+    func startCloudSync() {
+        cloudTimer?.invalidate()
+        let t = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.pullFromCloud() }
+        RunLoop.main.add(t, forMode: .common)
+        cloudTimer = t
+        pullFromCloud()
+    }
+
+    /// Takes settings from iCloud Drive when another Mac saved newer ones
+    func pullFromCloud() {
+        guard data.iCloudSync, let url = Self.cloudURL else { return }
+        // Ask iCloud to download the file if it's only in the cloud
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        guard let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+              date != lastCloudDate,
+              let raw = try? Data(contentsOf: url),
+              var incoming = try? JSONDecoder().decode(SettingsData.self, from: raw) else { return }
+        lastCloudDate = date
+        incoming.iCloudSync = true
+        guard incoming != data else { return }
+        applyingCloud = true
+        data = incoming
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.applyingCloud = false }
+    }
+
+    /// Turning sync on: use the iCloud copy if there is one, otherwise upload this Mac's settings
+    func enableCloudSync() {
+        data.iCloudSync = true
+        if let url = Self.cloudURL, FileManager.default.fileExists(atPath: url.path) {
+            lastCloudDate = nil
+            pullFromCloud()
+        } else {
+            saveNow()
+        }
     }
 
     var activeIndex: Int {
@@ -629,10 +847,22 @@ final class AppSettings: ObservableObject {
     /// The app in front (kept up to date by the app delegate) — not saved
     var frontmostBundleID: String?
 
-    /// The profile in use right now: one assigned to the front app, otherwise the active one
+    /// A video site is playing in the browser in front (kept up to date by the app delegate) — not saved
+    var mediaSiteInFront = false
+
+    /// The profile in use right now: one assigned to the front app, the Media profile while watching
+    /// video, otherwise the active one
     var effectiveProfile: Profile {
-        if let id = frontmostBundleID, let p = data.profiles.first(where: { $0.apps.contains(id) }) { return p }
-        return activeProfile
+        var found: Profile?
+        if let id = frontmostBundleID { found = data.profiles.first(where: { $0.apps.contains(id) }) }
+        if found == nil, mediaSiteInFront { found = data.profiles.first { $0.id == Defaults.mediaProfile.id } }
+        guard var p = found else { return activeProfile }
+        // The Media profile shows the button names of the controller in use
+        if p.id == Defaults.mediaProfile.id {
+            guard data.mediaMode else { return activeProfile }
+            p.style = activeProfile.style
+        }
+        return p
     }
 
     var activeProfile: Profile {
