@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 
 /// Everything Console Mode sends to macOS: pointer, clicks, scrolling and keys.
 final class Output {
@@ -140,6 +141,7 @@ final class Output {
         default: break
         }
         e.flags = f
+        e.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
         e.post(tap: .cghidEventTap)
     }
 
@@ -148,26 +150,37 @@ final class Output {
         key(s, down: false)
     }
 
-    /// Types text into the frontmost app, whatever the keyboard layout
+    /// Marks events Console Mode posts, so the keyboard preview can tell them from the Mac keyboard
+    static let eventTag: Int64 = 0x434D4F44   // "CMOD"
+
+    /// Types text into the frontmost app as real key presses on the current keyboard layout, so the
+    /// app treats it exactly like typing: autocorrect, text replacements, predictions and games all work.
+    /// Characters the layout can't type (emoji, some accents) are sent as text.
     func type(_ text: String) {
-        // Apps only read up to 20 characters per key event, so send long text in pieces
-        var chunk: [UniChar] = []
-        func flush() {
-            guard !chunk.isEmpty else { return }
-            for down in [true, false] {
-                guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
-                e.flags = []
-                e.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
-                e.post(tap: .cghidEventTap)
-            }
-            chunk.removeAll()
-        }
         for ch in text {
-            let u = Array(String(ch).utf16)
-            if chunk.count + u.count > 20 { flush() }
-            chunk += u
+            if let k = KeyLayout.shared.key(for: ch) {
+                for down in [true, false] {
+                    guard let e = CGEvent(keyboardEventSource: source, virtualKey: k.code, keyDown: down) else { continue }
+                    var f: CGEventFlags = []
+                    if k.shift { f.insert(.maskShift) }
+                    if k.option { f.insert(.maskAlternate) }
+                    e.flags = f
+                    e.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
+                    e.post(tap: .cghidEventTap)
+                }
+            } else {
+                var u = Array(String(ch).utf16)
+                // Apps only read up to 20 UTF-16 units per key event
+                guard u.count <= 20 else { continue }
+                for down in [true, false] {
+                    guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
+                    e.flags = []
+                    e.keyboardSetUnicodeString(stringLength: u.count, unicodeString: &u)
+                    e.setIntegerValueField(.eventSourceUserData, value: Self.eventTag)
+                    e.post(tap: .cghidEventTap)
+                }
+            }
         }
-        flush()
     }
 
     // MARK: Media keys (volume, brightness, play/pause)
@@ -209,6 +222,57 @@ final class Output {
     func openApp(bundleID: String) {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+}
+
+/// Which key (and Shift/Option) types each character on the Mac's current keyboard layout
+final class KeyLayout {
+    static let shared = KeyLayout()
+    struct Key { let code: CGKeyCode; let shift: Bool; let option: Bool }
+    private var map: [Character: Key] = [:]
+
+    private init() {
+        rebuild()
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil, queue: .main) { [weak self] _ in self?.rebuild() }
+    }
+
+    func key(for ch: Character) -> Key? { map[ch] }
+
+    private func rebuild() {
+        var m: [Character: Key] = [" ": Key(code: 49, shift: false, option: false),
+                                   "\n": Key(code: 36, shift: false, option: false),
+                                   "\r": Key(code: 36, shift: false, option: false),
+                                   "\t": Key(code: 48, shift: false, option: false)]
+        defer { map = m }
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue()
+                ?? TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
+        let kbType = UInt32(LMGetKbdType())
+        data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+            guard let layout = buf.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return }
+            // Plain first, so the simplest way to type a character wins
+            let combos: [(UInt32, Bool, Bool)] = [(0, false, false), (2, true, false), (8, false, true), (10, true, true)]
+            for (mods, shift, option) in combos {
+                // Main typing keys only (not the keypad, function keys, return, tab, space or delete)
+                for code in 0...50 where ![36, 48, 49].contains(code) {
+                    var dead: UInt32 = 0
+                    var len = 0
+                    var chars = [UniChar](repeating: 0, count: 4)
+                    let status = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), mods, kbType,
+                                                0, &dead, chars.count, &len, &chars)
+                    // Skip dead keys (like Option-E), which wait for another key
+                    guard status == noErr, dead == 0, len > 0 else { continue }
+                    let str = String(utf16CodeUnits: chars, count: len)
+                    guard str.count == 1, let ch = str.first, m[ch] == nil,
+                          !(ch.unicodeScalars.first.map { CharacterSet.controlCharacters.contains($0) } ?? true)
+                    else { continue }
+                    m[ch] = Key(code: CGKeyCode(code), shift: shift, option: option)
+                }
+            }
         }
     }
 }

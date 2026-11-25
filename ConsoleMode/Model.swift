@@ -177,6 +177,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
     case playPause, nextTrack, previousTrack, volumeUp, volumeDown, mute, brightnessUp, brightnessDown
     // Navigation & typing
     case jumpUp, jumpDown, jumpLeft, jumpRight, voiceTyping, siri
+    case previousDesktop, nextDesktop, previousDisplay, nextDisplay
     // Leave it to macOS (PS / Create buttons)
     case appleDefault
     // Custom
@@ -246,6 +247,10 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .jumpRight: return "Jump Right (to buttons & links)"
         case .voiceTyping: return "Voice Typing (hold to talk)"
         case .siri: return "Ask Siri"
+        case .previousDesktop: return "Previous Desktop (Space on the left)"
+        case .nextDesktop: return "Next Desktop (Space on the right)"
+        case .previousDisplay: return "Previous Display (move pointer)"
+        case .nextDisplay: return "Next Display (move pointer)"
         case .appleDefault: return "Apple Default"
         case .shortcut: return "Custom Shortcut…"
         }
@@ -256,6 +261,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         ("Pointer", [.leftClick, .rightClick, .middleClick, .jumpUp, .jumpDown, .jumpLeft, .jumpRight]),
         ("Console", [.keyboard, .voiceTyping, .siri, .appleDefault, .spotlight, .missionControl, .appWindows, .showDesktop, .appSwitcher,
                      .lastApp, .launchpad, .finder]),
+        ("Displays & Desktops", [.nextDisplay, .previousDisplay, .nextDesktop, .previousDesktop]),
         ("Keys", [.escape, .enter, .delete, .tab, .space, .arrowUp, .arrowDown, .arrowLeft, .arrowRight,
                   .pageUp, .pageDown]),
         ("Tabs & Windows", [.nextTab, .previousTab, .newTab, .reopenTab, .closeWindow, .quitApp, .fullScreen,
@@ -274,6 +280,8 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .spotlight: return k(49, cmd: true)
         case .missionControl: return k(126, ctrl: true)
+        case .previousDesktop: return k(123, ctrl: true)
+        case .nextDesktop: return k(124, ctrl: true)
         case .appWindows: return k(125, ctrl: true)
         case .showDesktop: return k(103)            // F11
         case .appSwitcher, .lastApp: return k(48, cmd: true)
@@ -334,6 +342,10 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .jumpUp, .jumpDown, .jumpLeft, .jumpRight: return "Move"
         case .voiceTyping: return "Voice"
         case .siri: return "Siri"
+        case .previousDesktop: return "Desktop ←"
+        case .nextDesktop: return "Desktop →"
+        case .previousDisplay: return "Previous Display"
+        case .nextDisplay: return "Next Display"
         default:
             return title.components(separatedBy: " (").first ?? title
         }
@@ -413,7 +425,7 @@ struct SettingsData: Codable {
     var swipeTyping = true
     var largeSettingsWithController = true
     var autoUpdate = true
-    var layoutVersion = 3
+    var layoutVersion = 4
     var lightRed = 0.0, lightGreen = 0.35, lightBlue = 1.0
 
     init() {}
@@ -462,6 +474,7 @@ struct SettingsData: Codable {
         layoutVersion = (try? c.decode(Int.self, forKey: .layoutVersion)) ?? 1
         if layoutVersion < 2 { Defaults.upgradeToV2(&profiles); layoutVersion = 2 }
         if layoutVersion < 3 { Defaults.upgradeToV3(&profiles); layoutVersion = 3 }
+        if layoutVersion < 4 { Defaults.upgradeToV4(&profiles); layoutVersion = 4 }
     }
 }
 
@@ -516,6 +529,18 @@ enum Defaults {
         }
     }
 
+    /// 3.3 put desktops on Quick Menu L1/R1 and "next display" on Quick Menu L3,
+    /// wherever those buttons still did what they did by default
+    static func upgradeToV4(_ profiles: inout [Profile]) {
+        let changes: [(PadButton, ActionKind, ActionKind)] = [
+            (.l1, .reopenTab, .previousDesktop), (.r1, .newTab, .nextDesktop), (.l3, .reload, .nextDisplay)]
+        for i in profiles.indices {
+            for (button, old, new) in changes where profiles[i].quickMenu[button] == b(old) {
+                profiles[i].quickMenu[button] = b(new)
+            }
+        }
+    }
+
     static func b(_ k: ActionKind, hold: ActionKind = .none) -> ButtonBinding {
         ButtonBinding(press: Action(kind: k), hold: Action(kind: hold))
     }
@@ -546,8 +571,8 @@ enum Defaults {
         .cross: b(.selectAll),
         .circle: b(.undo),
         .r2: b(.redo),
-        .r1: b(.newTab),
-        .l1: b(.reopenTab),
+        .r1: b(.nextDesktop),
+        .l1: b(.previousDesktop),
         .left: b(.pageBack),
         .right: b(.pageForward),
         .up: b(.volumeUp),
@@ -555,7 +580,7 @@ enum Defaults {
         .options: b(.quitApp),
         .create: b(.fullScreen),
         .ps: b(.lastApp),
-        .l3: b(.reload),
+        .l3: b(.nextDisplay),
         .r3: b(.find),
         .touchpad: b(.playPause),
     ]

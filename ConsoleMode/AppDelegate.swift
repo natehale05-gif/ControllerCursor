@@ -247,6 +247,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
 
     func buttonsChanged(quickMenu: Bool) { refreshHints(quickMenu: quickMenu) }
 
+    /// Jump the pointer to the next (or previous) display, left to right, back where it last was there
+    func switchDisplay(forward: Bool) {
+        let screens = NSScreen.screens.sorted {
+            $0.frame.minX != $1.frame.minX ? $0.frame.minX < $1.frame.minX : $0.frame.minY > $1.frame.minY
+        }
+        guard screens.count > 1, let primary = NSScreen.screens.first else {
+            toast.show("Only one display is connected", symbol: "display")
+            return
+        }
+        let here = NSScreen.withPointer
+        let cg = Output.pointerLocation()
+        if let here { pointerByDisplay[here.displayID] = cg }
+        let i = screens.firstIndex { $0 == here } ?? 0
+        let target = screens[(i + (forward ? 1 : screens.count - 1)) % screens.count]
+        let f = target.frame
+        // NSScreen is bottom-left based; pointer positions are top-left based
+        let cgFrame = CGRect(x: f.minX, y: primary.frame.maxY - f.maxY, width: f.width, height: f.height)
+        var dest = CGPoint(x: cgFrame.midX, y: cgFrame.midY)
+        if let saved = pointerByDisplay[target.displayID], cgFrame.contains(saved) { dest = saved }
+        out.movePointer(to: dest)
+        followPointer(dest)
+        let n = screens.firstIndex(of: target).map { $0 + 1 } ?? 1
+        toast.show("\(target.localizedName)  ·  \(n) of \(screens.count)", symbol: "display", duration: 1.6, on: target)
+        controllers.rumble(0.3)
+        keyboard.followPointerScreen()
+        refreshHints()
+    }
+
+    private var pointerByDisplay: [CGDirectDisplayID: CGPoint] = [:]
+
     func showMessage(_ text: String) {
         toast.show(text, symbol: "exclamationmark.bubble.fill", tint: .systemOrange, duration: 4)
     }
@@ -297,9 +327,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
                 add(b, title)
             }
             if !quickMenu { add(.l2, "Quick Menu") }
+            if quickMenu {
+                for b in [PadButton.l1, .r1, .l3] {
+                    let kind = settings.binding(for: b, quickMenu: true).press.kind
+                    guard kind != .none, kind != .shortcut else { continue }
+                    if kind == .nextDisplay || kind == .previousDisplay, NSScreen.screens.count < 2 { continue }
+                    add(b, kind.shortTitle)
+                }
+            }
         }
         hints.scale = displayScaler.pointRatio
         hints.bottomInset = keyboard.isVisible ? keyboard.topEdge : 0
+        hints.anchorScreen = keyboard.isVisible ? keyboard.currentScreen : nil
         hints.show(items, autoHideAfter: mode == .autoHide ? 4 : nil)
     }
 

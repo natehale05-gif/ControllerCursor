@@ -24,6 +24,18 @@ private func blurBackground(_ size: NSSize, radius: CGFloat) -> NSVisualEffectVi
     return v
 }
 
+extension NSScreen {
+    /// The display the pointer is on
+    static var withPointer: NSScreen? {
+        let p = NSEvent.mouseLocation
+        return screens.first { NSMouseInRect(p, $0.frame, false) } ?? screens.first
+    }
+
+    var displayID: CGDirectDisplayID {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+}
+
 // MARK: - Button hints along the bottom of the screen
 
 /// "✕ Select  ○ Back  △ Keyboard" — like the prompts at the bottom of a console screen
@@ -35,9 +47,11 @@ final class HintsBar {
 
     /// Lift the bar above something at the bottom of the screen (the keyboard)
     var bottomInset: CGFloat = 0
+    /// The display the keyboard is on, when lifting above it
+    var anchorScreen: NSScreen?
 
     func show(_ items: [(glyph: String, color: NSColor, title: String)], autoHideAfter: TimeInterval?) {
-        guard let screen = NSScreen.screens.first, !items.isEmpty else { return }
+        guard let screen = (bottomInset > 0 ? anchorScreen : nil) ?? NSScreen.withPointer, !items.isEmpty else { return }
         let fontSize: CGFloat = 15 * scale
         let glyphFont = NSFont.systemFont(ofSize: fontSize * 1.05, weight: .bold)
         let textFont = NSFont.systemFont(ofSize: fontSize, weight: .medium)
@@ -92,8 +106,9 @@ final class Toast {
     private var hideWork: DispatchWorkItem?
     private var generation = 0
 
-    func show(_ text: String, symbol: String, tint: NSColor = .white, duration: TimeInterval = 2.6) {
-        guard let screen = NSScreen.screens.first else { return }
+    func show(_ text: String, symbol: String, tint: NSColor = .white, duration: TimeInterval = 2.6,
+              on target: NSScreen? = nil) {
+        guard let screen = target ?? NSScreen.withPointer else { return }
         let font = NSFont.systemFont(ofSize: 15, weight: .semibold)
         let label = NSTextField(labelWithString: text)
         label.font = font
@@ -139,7 +154,7 @@ final class VoiceCaption {
 
     func update(_ text: String?) {
         guard let text else { panel.orderOut(nil); return }
-        guard let screen = NSScreen.screens.first else { return }
+        guard let screen = NSScreen.withPointer else { return }
         let shown = text.isEmpty ? "Listening…" : text
         let w: CGFloat = min(760, screen.visibleFrame.width - 80), h: CGFloat = 64
         let bg = blurBackground(NSSize(width: w, height: h), radius: 20)

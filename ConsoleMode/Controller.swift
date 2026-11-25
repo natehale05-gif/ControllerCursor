@@ -15,6 +15,7 @@ protocol ControllerDelegate: AnyObject {
     func navigate(_ dir: SnapNavigator.Direction) -> Bool
     func voiceTyping(_ start: Bool)
     func showMessage(_ text: String)
+    func switchDisplay(forward: Bool)
     /// For the on-screen hints
     func buttonsChanged(quickMenu: Bool)
     /// Swipe typing: the touchpad position while the keyboard is open (nil when lifted). Return true if used.
@@ -396,6 +397,8 @@ final class ControllerManager {
             }
         case .finder:
             if isStart { out.openApp(bundleID: "com.apple.finder") }
+        case .nextDisplay, .previousDisplay:
+            if isStart { delegate?.switchDisplay(forward: action.kind == .nextDisplay) }
         case .siri:
             // Opening Siri starts listening, just like holding the Siri key
             if isStart { out.openSiri { [weak self] msg in self?.delegate?.showMessage(msg) } }

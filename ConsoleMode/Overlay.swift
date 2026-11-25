@@ -172,6 +172,15 @@ final class ControllerKeyboard {
     var pointRatio: CGFloat = 1
 
     var isVisible: Bool { panel?.isVisible ?? false }
+    private var screen: NSScreen?
+    var currentScreen: NSScreen? { screen }
+
+    /// Move the keyboard to the display the pointer is on
+    func followPointerScreen() {
+        guard isVisible, let s = NSScreen.withPointer, s != screen else { return }
+        screen = s
+        layout()
+    }
     /// Top of the keyboard on screen (so the hints can sit above it)
     var topEdge: CGFloat { panel?.frame.maxY ?? 0 }
 
@@ -190,7 +199,14 @@ final class ControllerKeyboard {
 
     func show() {
         typedBuffer = ""
+        lastFocused = nil
         focusActive = true          // start with a key highlighted so the D-pad works right away
+        // Chrome, Electron apps and similar only share their text once asked
+        if let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() {
+            AXUIElementSetAttributeValue(AXUIElementCreateApplication(app.processIdentifier),
+                                         "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        }
+        startWatchingMacKeyboard()
         layout()
         panel?.orderFrontRegardless()
         updatePreview()
@@ -202,6 +218,7 @@ final class ControllerKeyboard {
 
     func hide() {
         panel?.orderOut(nil)
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         previewTimer?.invalidate()
         previewTimer = nil
         shift = false
@@ -218,8 +235,34 @@ final class ControllerKeyboard {
     private var previewLabel: NSTextField?
     private var suggestionLabel: NSTextField?
     private var previewTimer: Timer?
-    /// What's been typed with this keyboard, for apps that don't share their text
+    /// What's been typed (on this keyboard or the Mac's), for apps that don't share their text
     private var typedBuffer = ""
+    private var keyMonitor: Any?
+    private var lastFocused: AXUIElement?
+
+    /// Typing on the Mac's own keyboard shows up in the preview too
+    private func startWatchingMacKeyboard() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return }
+            // Our own key presses are already counted
+            if event.cgEvent?.getIntegerValueField(.eventSourceUserData) == Output.eventTag { return }
+            if !event.modifierFlags.intersection([.command, .control]).isEmpty { return }
+            switch event.keyCode {
+            case 51: if !self.typedBuffer.isEmpty { self.typedBuffer.removeLast() }
+            case 36, 76: self.typedBuffer += "\n"
+            case 48: self.typedBuffer += "\t"
+            default:
+                guard let chars = event.characters, !chars.isEmpty,
+                      !chars.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0)
+                          || (0xF700...0xF8FF).contains($0.value) }) else { return }
+                self.typedBuffer += chars
+            }
+            self.lastSwipe = nil
+            self.showSuggestions()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.updatePreview() }
+        }
+    }
 
     /// The last ~150 characters of a text box, without copying a whole long document
     private static func tailText(_ el: AXUIElement) -> String? {
@@ -254,6 +297,9 @@ final class ControllerKeyboard {
            AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
            let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() {
             let el = focused as! AXUIElement
+            // Moved to a different text box: start the typed text over
+            if let last = lastFocused, !CFEqual(last, el) { typedBuffer = "" }
+            lastFocused = el
             var role: CFTypeRef?
             AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
             var subrole: CFTypeRef?
@@ -378,7 +424,9 @@ final class ControllerKeyboard {
     }
 
     private func layout() {
-        guard let screen = NSScreen.screens.first else { return }
+        // Open on whichever display you're using; stay there until it closes
+        if !isVisible { screen = NSScreen.withPointer }
+        guard let screen = screen ?? NSScreen.screens.first else { return }
         let u = keySize * pointRatio
         let pad = u * 0.3
         let allRows = rows()
