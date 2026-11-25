@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ControllerDelegate {
         RunLoop.main.add(statusTimer, forMode: .common)
         refreshStatus()
 
+        // Opened straight from Downloads: offer to move into Applications so updates and permissions work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.updater.offerMoveToApplications() }
+
         // First launch: show Settings so permissions and ControllerKeys can be sorted out
         if !UserDefaults.standard.bool(forKey: "launchedBefore") {
             UserDefaults.standard.set(true, forKey: "launchedBefore")

@@ -97,27 +97,77 @@ final class Updater: ObservableObject {
         }.resume()
     }
 
-    private func install(_ newApp: URL, version: String) {
-        let currentApp = Bundle.main.bundleURL
-        let backup = currentApp.deletingLastPathComponent().appendingPathComponent(".Console Mode (old).app")
-        do {
-            try? FileManager.default.removeItem(at: backup)
-            try FileManager.default.moveItem(at: currentApp, to: backup)
-            try FileManager.default.moveItem(at: newApp, to: currentApp)
-        } catch {
-            try? FileManager.default.moveItem(at: backup, to: currentApp)
-            finish("Couldn't replace the app: \(error.localizedDescription)")
-            return
+    /// macOS runs apps opened straight from Downloads from a hidden read-only copy ("App Translocation"),
+    /// which can't update itself and loses its permissions
+    static var isTranslocated: Bool { Bundle.main.bundlePath.contains("/AppTranslocation/") }
+
+    /// Where Console Mode should live: where it is now, or Applications if it's somewhere it can't stay
+    private static func installLocation() -> URL {
+        let current = Bundle.main.bundleURL
+        if !isTranslocated, FileManager.default.isWritableFile(atPath: current.deletingLastPathComponent().path) {
+            return current
         }
-        NSWorkspace.shared.recycle([backup]) { _, _ in }
-        status = "Updated to \(version). Restarting…"
+        let system = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let folder = FileManager.default.isWritableFile(atPath: system.path) ? system
+            : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent("Console Mode.app")
+    }
+
+    /// Puts `newApp` where Console Mode belongs and restarts into it
+    private func place(_ newApp: URL) -> String? {
+        let dest = Self.installLocation()
+        let fm = FileManager.default
+        Self.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp.path])
+        let backup = dest.deletingLastPathComponent().appendingPathComponent(".Console Mode (old).app")
+        do {
+            try? fm.removeItem(at: backup)
+            if fm.fileExists(atPath: dest.path) { try fm.moveItem(at: dest, to: backup) }
+            try fm.moveItem(at: newApp, to: dest)
+        } catch {
+            if !fm.fileExists(atPath: dest.path) { try? fm.moveItem(at: backup, to: dest) }
+            return error.localizedDescription
+        }
+        if fm.fileExists(atPath: backup.path) { NSWorkspace.shared.recycle([backup]) { _, _ in } }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
         // Wait until this copy has fully quit (it restores the screen size first), then open the new one
         task.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; open \"$0\"",
-                          currentApp.path]
+                          dest.path]
         try? task.run()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+        return nil
+    }
+
+    private func install(_ newApp: URL, version: String) {
+        if let error = place(newApp) {
+            finish("Couldn't install the update: \(error)")
+            return
+        }
+        status = "Updated to \(version). Restarting…"
+    }
+
+    /// Offer to move a translocated copy into Applications, where it can update and keep its permissions
+    func offerMoveToApplications() {
+        guard Self.isTranslocated else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Move Console Mode to Applications?"
+        alert.informativeText = "It's running from a temporary copy macOS made when it was opened from Downloads, so it can't update itself or keep its Accessibility permission. Afterwards you can delete the copy in Downloads."
+        alert.addButton(withTitle: "Move to Applications")
+        alert.addButton(withTitle: "Not Now")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("ConsoleModeMove-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let copy = temp.appendingPathComponent("Console Mode.app")
+        // ditto keeps the code signature intact
+        guard Self.run("/usr/bin/ditto", [Bundle.main.bundlePath, copy.path]) == 0, place(copy) == nil else {
+            let fail = NSAlert()
+            fail.messageText = "Couldn't move Console Mode"
+            fail.informativeText = "Drag it from Downloads into Applications in Finder, then open it from there."
+            fail.runModal()
+            return
+        }
     }
 
     private func finish(_ message: String) {
